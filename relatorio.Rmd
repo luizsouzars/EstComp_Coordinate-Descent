@@ -1,0 +1,1344 @@
+---
+title: "O regularization path por coordinate descent"
+subtitle: "A implementação central de Friedman, Hastie & Tibshirani (2010), reconstruída, medida e estendida"
+author: "Trabalho de Estatística Computacional"
+date: "`r format(Sys.Date(), '%d/%m/%Y')`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+    number_sections: true
+    theme: readable
+    highlight: tango
+    df_print: kable
+    fig_width: 7.2
+    fig_height: 4.2
+---
+
+<style>
+.intuicao {
+  background: #f7f7f5;
+  border-left: 4px solid #8a8a84;
+  padding: 0.8em 1.1em;
+  margin: 1.4em 0;
+  border-radius: 0 4px 4px 0;
+}
+.intuicao p:first-child { margin-top: 0; }
+.intuicao p:last-child  { margin-bottom: 0; }
+.achado {
+  background: #f2f4f7;
+  border-left: 4px solid #3f4a57;
+  padding: 0.8em 1.1em;
+  margin: 1.4em 0;
+  border-radius: 0 4px 4px 0;
+}
+.achado p:first-child { margin-top: 0; }
+.achado p:last-child  { margin-bottom: 0; }
+caption { color: #555; font-size: 0.92em; }
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE,
+                      fig.align = "center", dpi = 130)
+
+## RAPIDO = TRUE roda em poucos minutos. Para o estudo completo, mude para FALSE.
+RAPIDO <- TRUE
+
+source("R/00_setup.R")
+
+abl <- com_cache("ec1_ablacao",
+  experimento_ablacao(R = PARAM$R_ABL, rhos = PARAM$RHO_ABL,
+                      nlambda = PARAM$NL_ABL))
+cri <- com_cache("ec2_criterios", experimento_criterios(R = PARAM$R_CRI))
+rot <- com_cache("rotas_1996",    experimento_rotas())
+vel <- com_cache("co_velocidade", experimento_ordem_velocidade(R = PARAM$R_VEL))
+sel <- com_cache("co_selecao",
+  experimento_ordem_selecao(R = PARAM$R_SEL, B = PARAM$B_ORD))
+cop <- com_cache("co_copias",     exemplo_copias())
+dcr <- com_cache("dados_crime",   carrega_dados())
+app <- com_cache("aplicacao",
+  experimento_aplicacao(dcr, B_ordem = PARAM$B_ORD))
+
+tab <- function(x, ...) knitr::kable(x, row.names = FALSE, ...)
+fmt <- function(x, d = 3) {
+  x <- x[1]
+  if (!is.finite(x)) return("nao finito")
+  format(x, digits = d, scientific = abs(x) < 1e-3)
+}
+
+## grade de uma superficie em formato longo, para geom_contour
+grade_df <- function(s) data.frame(
+  b1  = rep(s$b1, times = length(s$b2)),
+  b2  = rep(s$b2, each  = length(s$b1)),
+  obj = as.vector(s$Z))
+
+## desenha uma superficie 3D com persp e devolve a matriz de projecao
+desenha_3d <- function(s, theta = -42, phi = 26, titulo = "", nb = 60) {
+  nrz <- nrow(s$Z); ncz <- ncol(s$Z)
+  zf <- (s$Z[-1, -1] + s$Z[-1, -ncz] + s$Z[-nrz, -1] + s$Z[-nrz, -ncz]) / 4
+  cores <- grDevices::hcl.colors(nb, PALETA, rev = TRUE)
+  persp(s$b1, s$b2, s$Z, col = cores[cut(zf, nb)],
+        border = grDevices::adjustcolor("grey25", alpha.f = 0.35),
+        theta = theta, phi = phi, expand = 0.6, shade = 0.35, ltheta = 40,
+        xlab = "beta 1", ylab = "beta 2", zlab = "objetivo",
+        ticktype = "detailed", cex.axis = 0.6, cex.lab = 0.8, main = titulo)
+}
+```
+
+# Como este documento funciona {-}
+
+O documento não contém código do método. Ele carrega os arquivos de `R/` e usa
+duas funções para se comunicar com eles:
+
+```r
+source("R/00_setup.R")                       # carrega os oito arquivos de implementação
+mostra("en_path", "01_caminho.R")            # imprime a função, lendo o arquivo-fonte
+mostra_trecho("ec1", "05_experimentos.R")    # imprime o trecho entre marcadores
+```
+
+`mostra()` localiza a definição pelo nome, lê até a chave de fechamento e imprime
+num bloco de código. `mostra_trecho()` extrai o que estiver entre `## <<marca` e
+`## marca>>`. Todo bloco de código exibido abaixo veio de um arquivo `.R` por um
+desses dois caminhos.
+
+Os experimentos passam por `com_cache(nome, expressão)`, que grava o resultado em
+`resultados/nome_v3.rds` na primeira execução e apenas lê nas seguintes. O sufixo
+vem de `VERSAO_CACHE`, em `00_setup.R`: alterar essa string invalida todos os
+resultados guardados. O tamanho do estudo está em `PARAM`, no mesmo arquivo, lido
+tanto por este documento quanto por `R/99_roda_tudo.R`.
+
+Os números citados no texto corrido não são digitados: vêm de expressões R
+inline, avaliadas sobre os mesmos objetos que geram as tabelas.
+
+| Arquivo | Conteúdo |
+|:--|:--|
+| `R/00_setup.R` | tema gráfico, cache, `mostra()`, `PARAM`, `VERSAO_CACHE` |
+| `R/01_caminho.R` | a implementação principal |
+| `R/02_selecao_lambda.R` | cross-validation e critérios analíticos |
+| `R/03_referencia_1996.R` | a rota de Tibshirani (1996) |
+| `R/04_geradores.R` | cenários de simulação e métricas |
+| `R/05_experimentos.R` | os dois experimentos de Monte Carlo |
+| `R/06_contribuicao.R` | a contribuição original |
+| `R/07_aplicacao.R` | dados reais |
+| `R/08_visualizacoes.R` | a geometria do problema em duas dimensões |
+| `R/00_testes.R` | verificação (~30 s) |
+| `R/99_roda_tudo.R` | roda os experimentos e enche o cache |
+
+**Para reproduzir.** Extraia o pacote numa **pasta vazia** — este projeto tem só
+três nomes de arquivo em comum com a versão anterior, mais larga, então extrair
+um por cima do outro deixa arquivos órfãos que o R pode carregar no lugar dos
+certos. O `R/00_setup.R` verifica isso e interrompe com uma mensagem explícita
+se encontrar mistura. No R, a partir da pasta do projeto:
+
+```r
+source("R/00_testes.R")          # ~1 min, valida a implementação
+rmarkdown::render("relatorio.Rmd")
+```
+
+Requisitos: R ≥ 4.1 e `ggplot2` ≥ 3.4. Nenhum pacote de modelagem. Internet
+apenas na primeira execução, para baixar os dados do UCI.
+
+**Tempo.** A primeira renderização calcula tudo e leva algo entre quinze e
+quarenta minutos, conforme a máquina; as seguintes leem o cache e levam menos de
+um minuto. Cada experimento anuncia o próprio andamento no console
+(`EC1 celula 3/16`, `aplicacao: diagnostico de reordenacao ...`), de modo que dá
+para distinguir processo lento de processo travado. Se quiser um ensaio rápido
+antes, rode `R/99_roda_tudo.R`, que faz os mesmos cálculos com relatório de
+progresso e sem renderizar nada.
+
+---
+
+# O recorte
+
+O artigo de 2010 apresenta sete componentes: *coordinate descent*, *covariance
+updates*, *regularization paths* com *warm starts*, regressão logística,
+multinomial, resposta agrupada e tratamento de matrizes esparsas. Este trabalho
+implementa um deles:
+
+> **O *regularization path* percorrido por *coordinate descent* cíclico com
+> *warm starts*** — a função `en_path()`, no caso gaussiano.
+
+Os demais são descritos no texto e apontados como extensões, mas não
+implementados. Três razões sustentam a escolha.
+
+**Não é o *coordinate descent* que o artigo reivindica.** Os autores o atribuem a
+Fu (1998), Daubechies et al. (2004), Shevade & Keerthi (2003), Van der Kooij
+(2007) e Wu & Lange (2008), e observam que o método foi redescoberto várias vezes
+sem que seu poder fosse percebido. O que reivindicam é tê-lo aplicado ao caminho
+inteiro. O precursor direto chama-se "Pathwise Coordinate Optimization" (Friedman
+et al., 2007), e o título de 2010 põe *Paths* antes de *Coordinate Descent*.
+
+**É a peça que faltava em 1996.** O gargalo do lasso original não era a qualidade
+do estimador, e sim que cada valor do parâmetro de regularização exigia uma
+execução independente de um otimizador caro.
+
+**As demais partes dependem dela.** As *covariance updates* são uma otimização
+interna ao caminho. A extensão a GLMs funciona porque os autores não implementam
+verificação de divergência do Newton — o argumento é que os *warm starts* mantêm
+cada problema tão próximo do anterior que a aproximação quadrática não chega a
+quebrar. Retirar o caminho derruba as extensões; retirar as extensões não derruba
+o caminho.
+
+---
+
+# 1996 → 2010: o que exatamente muda
+
+## O lasso como Tibshirani o definiu
+
+$$
+\hat{\boldsymbol\beta} = \arg\min \sum_{i=1}^{N}\Big(y_i - \beta_0 - \sum_j \beta_j x_{ij}\Big)^2
+\qquad \text{sujeito a} \qquad \sum_{j=1}^{p} |\beta_j| \le t .
+$$
+
+A restrição $\sum_j|\beta_j|\le t$ equivale a $2^p$ desigualdades lineares, uma
+para cada combinação de sinais. Tibshirani a trata introduzindo restrições sob
+demanda: na prática, entre $0{,}5p$ e $0{,}75p$ problemas de mínimos quadrados
+restritos, cada um deles uma programação quadrática completa.
+
+Três consequências, todas registradas no artigo de 1996:
+
+1. cada valor de $t$ é resolvido do zero;
+2. escolher $t$ por *cross-validation* multiplica esse custo: $K$ *folds* sobre
+   uma grade de $G$ valores custam $K \times G$ execuções, mais o ajuste final.
+   Daí a discussão, em pé de igualdade, de critérios analíticos como a
+   *generalized cross-validation* e um estimador de risco no estilo de Stein;
+3. fronteiras não cruzadas: modelos lineares generalizados ("a convergência não é
+   garantida em geral"), $p$ grande, correlação alta.
+
+## A reformulação
+
+$$
+\min_{\beta_0,\boldsymbol\beta}\;
+\frac{1}{2N}\sum_{i=1}^{N}\big(y_i-\beta_0-\mathbf{x}_i^\top\boldsymbol\beta\big)^2
++\lambda\,P_\alpha(\boldsymbol\beta),
+\qquad
+P_\alpha(\boldsymbol\beta)=\sum_{j}\Big[\tfrac{1-\alpha}{2}\beta_j^2+\alpha|\beta_j|\Big].
+$$
+
+Por dualidade lagrangiana os dois problemas são equivalentes: para cada $t$
+existe um $\lambda$ que dá a mesma solução. Estatisticamente nada muda;
+estruturalmente muda tudo.
+
+| | 1996 (restrita) | 2010 (penalizada) |
+|:--|:--|:--|
+| Restrições | $2^p$ desigualdades | nenhuma |
+| Penalidade | acopla as coordenadas | **separável** |
+| Otimizar $\beta_j$ com o resto fixo | ainda é problema restrito | **forma fechada** |
+| Grade de $G$ valores | $G$ problemas independentes | um caminho, cada ponto herdando o anterior |
+
+::: {.intuicao}
+**Intuição — por que "separável" é a palavra que importa.** Numa restrição
+$\sum_j|\beta_j|\le t$, mexer em $\beta_3$ consome orçamento dos outros: as
+coordenadas estão amarradas e não se pode otimizar uma sem renegociar todas. Na
+forma penalizada cada coordenada paga o próprio pedágio $\lambda|\beta_j|$,
+independentemente das demais. Fixados os outros coeficientes, sobra um problema
+de uma variável só — e esse tem solução analítica. Toda a cadeia sai daí:
+
+$$\text{separável}\Rightarrow\text{forma fechada}\Rightarrow\text{ciclo barato}
+\Rightarrow\text{caminho barato}\Rightarrow\textit{warm start}.$$
+
+E o *warm start* devolve o favor: cada problema do caminho é fácil porque a
+solução anterior já é quase a resposta.
+:::
+
+---
+
+# A geometria do problema
+
+Com $p=2$ o problema inteiro cabe num gráfico: o objetivo é uma superfície sobre
+o plano $(\beta_1,\beta_2)$ e o algoritmo é um caminho sobre ela. As funções
+usadas aqui são as mesmas de `R/01_caminho.R`, rodando em duas dimensões.
+
+```{r geo-3d, fig.width=10, fig.height=3.9}
+d2  <- dados_2d(N = 120, rho = 0.85, beta = c(1.4, 0.5), sigma = 1)
+lam_ex <- 0.55
+dc <- decomposicao(d2, lambda = lam_ex, alpha = 1, lim = c(-1.2, 2.2), n = 45)
+tr <- traj_2d(d2, lambda = lam_ex, alpha = 1, inicio = c(-1.0, 2.0), n_passos = 16)
+
+op <- par(mfrow = c(1, 3), mar = c(0.5, 0.5, 2.2, 0.5))
+desenha_3d(dc$quadratico, titulo = "(a) erro quadratico")
+desenha_3d(dc$penalidade, titulo = "(b) penalidade l1")
+pm <- desenha_3d(dc$soma,  titulo = "(c) a soma, com a trajetoria")
+zt <- tr$objetivo + 0.03 * diff(range(dc$soma$Z))
+lines(trans3d(tr$b1, tr$b2, zt, pm), lwd = 2.2, col = "black")
+points(trans3d(tr$b1, tr$b2, zt, pm), pch = 16, cex = 0.5, col = "black")
+points(trans3d(tr$b1[1], tr$b2[1], zt[1], pm), pch = 21, bg = "white", cex = 1.1)
+par(op)
+```
+
+::: {.intuicao}
+**Intuição — de onde vêm os zeros.** O painel (a) é o termo de erro quadrático:
+uma tigela elíptica, lisa em toda parte. O painel (b) é a penalidade sozinha —
+um cone com **quinas** ao longo dos dois eixos, que é onde $|\beta_j|$ deixa de
+ser derivável. O painel (c) é a soma, e herda os vincos.
+
+Num ponto liso o mínimo só pode estar onde a derivada é zero, e a chance de isso
+cair exatamente em $\beta_j=0$ é nula. Numa quina não existe *uma* derivada,
+existe um **intervalo** de subgradientes: basta que o gradiente do termo
+quadrático caiba dentro desse intervalo para que o mínimo fique preso ali. E
+ele fica preso para uma **faixa inteira** de valores de $\lambda$. É a quina, e
+não a inclinação da penalidade, que produz zeros exatos. O ridge encolhe porque
+inclina a tigela; o lasso zera porque a amassa.
+
+A linha preta em (c) é a trajetória do *coordinate descent*: ela só anda
+paralelamente aos eixos, porque cada passo resolve exatamente o problema de uma
+variável — vai até o fundo do vale **naquela direção** — e depois troca de
+direção.
+:::
+
+## O corte que mostra o bico
+
+A superfície em três dimensões é bonita, mas o argumento fica mais nítido num
+corte. Abaixo, o objetivo como função de $\beta_2$ apenas, com $\beta_1$ fixado
+no seu valor ótimo, para três valores de $\lambda$.
+
+```{r geo-corte, fig.width=9, fig.height=3.4}
+ct <- corte_1d(d2, lambdas = c(0.10, 0.35, 0.80), alpha = 1, j = 2L)
+ct$rotulo <- factor(ct$rotulo, levels = unique(ct$rotulo))
+pts <- do.call(rbind, lapply(split(ct, ct$rotulo), function(z)
+  z[which.min(abs(z$beta - z$otimo[1]))[1], ]))
+
+ggplot(ct, aes(beta, objetivo)) +
+  geom_vline(xintercept = 0, colour = "grey80", linewidth = 0.3) +
+  geom_line(colour = "grey10", linewidth = 0.7) +
+  geom_point(data = pts, shape = 21, fill = "white", colour = "black", size = 2.8) +
+  facet_wrap(~ rotulo, scales = "free_y") +
+  labs(x = expression(beta[2]), y = "objetivo penalizado",
+       title = "O mesmo corte, três valores de lambda",
+       caption = "Círculo branco: o mínimo. Repare no bico em beta = 0 — e em como o mínimo gruda nele.")
+```
+
+::: {.intuicao}
+**Intuição.** Sem penalidade essa curva seria uma parábola lisa, e o mínimo
+cairia em algum valor não nulo. Com a penalidade $\ell_1$ a curva ganha um bico
+em zero: a inclinação salta de $-\lambda$ para $+\lambda$ ao atravessar a
+origem. Enquanto a inclinação do termo quadrático em zero for menor que
+$\lambda$ em módulo, **nenhuma direção desce** — e o mínimo é exatamente zero.
+É essa desigualdade, $|\langle\mathbf{x}_2,\mathbf{r}\rangle/N| \le \lambda\alpha$,
+que reaparece nas condições KKT e no operador $S(\cdot,\lambda\alpha)$.
+
+Note que o bico existe nos três painéis; o que muda é se ele é fundo o bastante
+para prender o mínimo.
+:::
+
+## Por que a correlação atrapalha o *coordinate descent*
+
+```{r geo-zig, fig.width=9, fig.height=4.2}
+faz_zig <- function(rho, n_passos = 22) {
+  d <- dados_2d(N = 120, rho = rho, beta = c(1.2, 0.9), sigma = 1, semente = 7)
+  s <- superficie(d, lambda = 0.12, alpha = 1, lim = c(-0.4, 1.9), n = 130)
+  tj <- traj_2d(d, lambda = 0.12, alpha = 1, inicio = c(-0.2, 1.8), n_passos = n_passos)
+  list(g = transform(grade_df(s), rho = paste0("correlacao = ", rho)),
+       t = transform(tj, rho = paste0("correlacao = ", rho)))
+}
+z0 <- faz_zig(0.0); z9 <- faz_zig(0.95)
+gg <- rbind(z0$g, z9$g); tt <- rbind(z0$t, z9$t)
+
+ggplot(gg, aes(b1, b2)) +
+  geom_contour(aes(z = obj), bins = 26, colour = "grey72", linewidth = 0.3) +
+  geom_hline(yintercept = 0, colour = "grey45", linewidth = 0.3) +
+  geom_vline(xintercept = 0, colour = "grey45", linewidth = 0.3) +
+  geom_path(data = tt, colour = "grey10", linewidth = 0.6) +
+  geom_point(data = tt, colour = "grey10", size = 0.9) +
+  geom_point(data = subset(tt, passo == 0), shape = 21, fill = "white",
+             colour = "grey10", size = 2.6) +
+  facet_wrap(~ rho) +
+  coord_equal() +
+  labs(x = expression(beta[1]), y = expression(beta[2]),
+       title = "A mesma quantidade de passos, dois condicionamentos",
+       caption = "Círculo branco: ponto de partida. Cada segmento é uma atualização de coordenada.")
+```
+
+::: {.intuicao}
+**Intuição.** Sem correlação as curvas de nível são quase circulares e dois
+passos bastam: ajusta-se $\beta_1$, ajusta-se $\beta_2$, chegou. Com correlação
+alta as curvas viram elipses finas e **inclinadas** — e a direção de descida útil
+é a diagonal, que o algoritmo não pode tomar. Ele escorrega pela parede do vale
+em zigue-zague, dando muitos passos curtos. Essa é a razão teórica para esperar
+que a correlação encareça o *coordinate descent*, e é ela que os autores dizem
+não ter observado. O experimento EC1 verifica quem tem razão.
+:::
+
+## O que o *warm start* economiza
+
+```{r geo-warm, fig.width=6.4, fig.height=4.6}
+cw <- comparacao_warm(d2, nlambda = 18, alpha = 1, lambda_min_ratio = 0.02)
+k_alvo <- 12L
+lam_k <- cw$lambda[k_alvo]
+b_ant <- as.numeric(cw$solucoes[k_alvo - 1L, c("b1", "b2")])
+sk <- superficie(d2, lambda = lam_k, alpha = 1, lim = c(-0.4, 2.0), n = 130)
+tq <- traj_2d(d2, lam_k, 1, inicio = b_ant,   n_passos = 10)
+tf <- traj_2d(d2, lam_k, 1, inicio = c(0, 0), n_passos = 10)
+tq$partida <- "warm start"; tf$partida <- "partida fria"
+tt2 <- rbind(tq, tf)
+
+ggplot(grade_df(sk), aes(b1, b2)) +
+  geom_contour(aes(z = obj), bins = 24, colour = "grey75", linewidth = 0.3) +
+  geom_hline(yintercept = 0, colour = "grey45", linewidth = 0.3) +
+  geom_vline(xintercept = 0, colour = "grey45", linewidth = 0.3) +
+  geom_path(data = tt2, aes(linetype = partida), colour = "grey10", linewidth = 0.6) +
+  geom_point(data = tt2, colour = "grey10", size = 0.8) +
+  geom_point(data = cw$solucoes, aes(b1, b2), shape = 4, colour = "grey35", size = 1.6) +
+  annotate("point", x = b_ant[1], y = b_ant[2], shape = 21, fill = "white",
+           colour = "black", size = 3) +
+  scale_linetype_manual(values = c("warm start" = "solid", "partida fria" = "22")) +
+  coord_equal() +
+  labs(x = expression(beta[1]), y = expression(beta[2]), linetype = NULL,
+       title = "Mesmo lambda, dois pontos de partida",
+       caption = "x: soluções dos demais lambdas do caminho. Círculo branco: solução do lambda anterior.")
+```
+
+```{r geo-warm2, fig.height=3.4}
+ggplot(cw$passos, aes(log(lambda), passos, linetype = partida)) +
+  geom_step(colour = "grey10", linewidth = 0.6) +
+  scale_linetype_manual(values = c("warm start (solucao anterior)" = "solid",
+                                   "partida fria (do zero)" = "22")) +
+  guides(linetype = guide_legend(nrow = 2)) +
+  labs(x = expression(log(lambda)), y = "passos de coordenada até convergir",
+       linetype = NULL, title = "O custo ao longo do caminho",
+       caption = "A distância entre as curvas é o que o regularization path economiza.")
+```
+
+::: {.intuicao}
+**Intuição.** As soluções ao longo do caminho formam uma curva contínua: quando
+$\lambda$ cai um pouco, a solução se move pouco. Partir da solução anterior
+significa começar a poucos passos do destino; partir da origem significa
+atravessar o espaço inteiro toda vez. E há um detalhe que só a figura mostra: as
+soluções ficam **sobre os eixos** em boa parte do caminho, isto é, o *active set*
+é pequeno — e é por isso que o segundo ingrediente do algoritmo, visitar só as
+coordenadas ativas, tem o que economizar.
+:::
+
+---
+
+# O algoritmo
+
+> **Algoritmo — *regularization path* elastic net por *coordinate descent* cíclico**
+>
+> **Entrada:** $\mathbf{X}$ de dimensão $N\times p$, $\mathbf{y}$ de comprimento $N$, $\alpha\in[0,1]$, $K$, $\epsilon$, pesos $\gamma_j\ge 0$, tolerância $\tau$.
+>
+> 1. Centre $\mathbf{y}$; centre e padronize as colunas de $\mathbf{X}$.
+> 2. $\displaystyle\lambda_{\max}=\max_{j:\gamma_j>0}\frac{|\langle\mathbf{x}_j,\mathbf{y}\rangle|}{N\alpha\gamma_j}$; grade log-espaçada $\lambda_1=\lambda_{\max}>\cdots>\lambda_K=\epsilon\lambda_{\max}$.
+> 3. $\boldsymbol\beta\leftarrow\mathbf{0}$, $\mathbf{r}\leftarrow\mathbf{y}$ — **solução exata em $\lambda_1$**.
+> 4. **para** $k=1,\dots,K$ *(o $\boldsymbol\beta$ persiste: é o **warm start**)*:
+>     1. **repita** um ciclo completo $j=1,\dots,p$:
+>        $\rho\leftarrow\langle\mathbf{x}_j,\mathbf{r}\rangle/N+\beta_j$;
+>        $\beta_j^{\text{novo}}\leftarrow S(\rho,\lambda_k\alpha\gamma_j)/(1+\lambda_k(1-\alpha)\gamma_j)$;
+>        se mudou, $\mathbf{r}\leftarrow\mathbf{r}-\mathbf{x}_j(\beta_j^{\text{novo}}-\beta_j)$.
+>     2. Se o ciclo completo não mudou nada ($\max_j(\Delta\beta_j)^2<\tau$): **convergiu**.
+>     3. Caso contrário, itere ciclos restritos ao **active set** $A=\{j:\beta_j\ne0\}$ até convergir, e volte a 4.1.
+> 5. Desfaça a padronização; $\hat\beta_0=\bar y-\sum_j\hat\beta_j\bar x_j$.
+
+::: {.intuicao}
+**Três leituras do algoritmo.**
+
+*O passo 2 só existe porque a solução em $\lambda_{\max}$ é conhecida de
+antemão.* Acima de $\lambda_{\max}$ o *soft-thresholding* zera toda coordenada. O
+caminho parte de um ponto exato, não de um chute — e é isso que faz o
+*warm start* funcionar desde a primeira iteração.
+
+*O passo 4.2 é a condição de parada correta.* Só um ciclo **completo** sem
+mudanças garante que nenhuma variável de fora do *active set* deveria ter
+entrado. Parar após convergir apenas dentro do *active set* seria um erro sutil:
+o modelo pareceria convergido e estaria errado.
+
+*Os passos 4 e 4.3 são acelerações, não parte da definição do estimador.*
+Desligá-los deve dar a mesma resposta, mais devagar. É exatamente essa hipótese
+que o experimento EC1 testa.
+:::
+
+---
+
+# A implementação
+
+## O passo elementar
+
+```{r cod-S, results='asis'}
+mostra("S", "01_caminho.R")
+```
+
+Pelas condições de otimalidade em termos do subgradiente,
+
+$$
+-\frac{1}{N}\langle \mathbf{x}_j, \mathbf{r}^{(j)}\rangle + \beta_j + \lambda(1-\alpha)\beta_j + \lambda\alpha\, s_j = 0,
+\qquad s_j\in\begin{cases}\{\operatorname{sign}(\beta_j)\}&\beta_j\ne0\\ [-1,1]&\beta_j=0,\end{cases}
+$$
+
+e resolver caso a caso dá $S(\rho,\lambda\alpha)/(1+\lambda(1-\alpha))$.
+
+O numerador é a equação (3) de Tibshirani (1996), a fórmula fechada para o caso
+ortonormal. Em 1996 era um resultado analítico isolado, útil para *entender* o
+estimador. Em 2010 é o passo executado milhões de vezes por segundo. A mesma
+fórmula muda de papel: de descrição para mecanismo.
+
+## Um ciclo
+
+```{r cod-ciclo, results='asis'}
+mostra("ciclo_gauss", "01_caminho.R")
+```
+
+::: {.intuicao}
+**Intuição — por que a esparsidade barateia o ciclo.** A linha `if (d != 0)` é o
+coração da eficiência. Atualizar o resíduo custa $O(N)$, e só acontece quando o
+coeficiente muda. Numa solução com 12 variáveis ativas entre 1000, 988
+coordenadas por ciclo são apenas *consultadas* — o custo real fica muito abaixo
+do pior caso $O(pN)$. A esparsidade que o método produz é também o que o torna
+rápido.
+:::
+
+O campo `visitas` conta quantas vezes uma coordenada foi avaliada. Cada visita
+custa $O(N)$. Diferente do tempo de relógio, essa contagem não depende da
+máquina, do sistema operacional nem da carga.
+
+## Convergência para um $\lambda$
+
+```{r cod-cd, results='asis'}
+mostra("cd_ate_convergir", "01_caminho.R")
+```
+
+## O caminho
+
+```{r cod-path, results='asis'}
+mostra("en_path", "01_caminho.R")
+```
+
+## A auditoria de otimalidade
+
+```{r cod-kkt, results='asis'}
+mostra("viol_kkt", "01_caminho.R")
+```
+
+Esta função não faz parte do algoritmo — é o instrumento que permite afirmar que
+a implementação resolve o problema **sem comparar com o `glmnet`**. Comparar duas
+implementações não diz qual das duas está certa; verificar as condições de
+otimalidade diz.
+
+---
+
+# Validação
+
+```{r validacao}
+set.seed(20260812)
+N <- 60L; p <- 8L
+Z <- scale(matrix(rnorm(N * p), N, p), TRUE, FALSE)
+Q <- qr.Q(qr(Z)) * sqrt(N)
+yq <- as.vector(Q %*% c(3, -2, 1, rep(0, p - 3))) + rnorm(N, sd = 0.5)
+lam <- 0.4
+bq  <- en_path(Q, yq, alpha = 1, lambda = lam)$beta[, 1]
+mqo <- as.vector(crossprod(Q, yq - mean(yq))) / N
+
+d0 <- gera_ar1(120, 40, rho = 0.6, beta = c(2, -1.5, 1, rep(0, 37)), sigma = 1)
+kk <- t(sapply(c(1, 0.5, 0.1), function(a) {
+  f <- en_path(d0$X, d0$y, alpha = a, nlambda = 40)
+  c(abs = max(viol_kkt(f)), rel = max(viol_kkt(f, relativa = TRUE)))
+}))
+
+tab(data.frame(
+  Verificação = c("Caso ortonormal contra a eq. (3) de Tibshirani (1996)",
+                  "KKT relativa a lambda*alpha, alpha = 1",
+                  "KKT relativa a lambda*alpha, alpha = 0,5",
+                  "KKT relativa a lambda*alpha, alpha = 0,1"),
+  Valor = c(max(abs(bq - S(mqo, lam))), kk[, "rel"]),
+  `Também em valor absoluto` = c(NA, kk[, "abs"]),
+  Esperado = c("exato (0)",
+               rep(sprintf("da ordem de tol = %g", formals(en_path)$tol), 3)),
+  check.names = FALSE), digits = 6)
+```
+
+**Caso ortonormal.** Com $\mathbf{X}^\top\mathbf{X}/N=\mathbf{I}$ o problema se
+separa exatamente e a solução tem forma fechada. A implementação a reproduz à
+precisão de máquina — discrepância exatamente nula.
+
+**Condições KKT.** Um erro de implementação — sinal trocado, fator $1/N$
+esquecido, parada prematura — produziria violações relativas de ordem 1, não da
+ordem da tolerância.
+
+::: {.achado}
+**Duas correções que as execuções deste trabalho exigiram, e a segunda é a
+interessante.**
+
+*Primeira.* O critério de parada olha o **passo**, não a **distância ao ótimo**.
+Sob correlação alta o *coordinate descent* converge linearmente com razão
+próxima de 1, e a distância ao ótimo é da ordem do passo dividido por
+$(1-\text{razão})$. Passo pequeno não é sinônimo de estar perto.
+
+*Segunda, e mais sutil.* Um limiar **absoluto** não é equivariante em escala. As
+condições KKT comparam o gradiente com $\lambda\alpha$, e $\lambda$ percorre
+quatro ordens de grandeza ao longo do caminho: um erro de $10^{-5}$ é
+desprezível quando $\lambda\alpha=1$ e catastrófico quando
+$\lambda\alpha=10^{-5}$. Na segunda execução deste trabalho, com limiar
+absoluto de $10^{-10}$ sobre $(\Delta\beta)^2$, a violação KKT **relativa**
+chegou a **4,6** no fim do caminho — o gradiente estava mais distante da
+condição de otimalidade do que o próprio $\lambda$. O diagnóstico só apareceu
+porque medimos a violação relativa; em valor absoluto ela era $2{,}7\times
+10^{-4}$ e passaria por aceitável.
+
+A correção é exigir $|\Delta\beta_j| < \text{tol}\cdot\lambda_k$, o que torna o
+critério proporcional à escala local. O argumento `escala_tol = "absoluta"`
+preserva o comportamento usual, e é usado adiante para exibir o contraste em
+dados reais.
+:::
+
+---
+
+# O contraste com 1996, medido
+
+Tibshirani (1996), na Seção 4, resolve o lasso aproximando a penalidade por uma
+forma quadrática, o que reduz cada iteração a um ridge com pesos. Em linguagem
+moderna é um algoritmo de majorização-minimização, e a ideia é boa. O problema
+está em outro lugar.
+
+```{r cod-ridge, results='asis'}
+mostra("ridge_iterado", "03_referencia_1996.R")
+```
+
+```{r fig-rotas, fig.height=3.8}
+ggplot(rot$traj, aes(passo, gap, linetype = rota)) +
+  geom_line(colour = "grey15", linewidth = 0.6) +
+  scale_y_log10() +
+  scale_linetype_manual(values = c("solid", "22")) +
+  guides(linetype = guide_legend(nrow = 2)) +
+  labs(x = "iteração (custo comparável em ambas as rotas)",
+       y = "distância ao ótimo (escala log)", linetype = NULL,
+       title = "Duas rotas para o mesmo problema",
+       caption = "O ridge iterado estabiliza ACIMA do ótimo: variáveis descartadas pelo limiar não podem voltar.")
+```
+
+```{r tab-rotas}
+s <- rot$sensibilidade
+n_eps_grande <- s$nao_nulos[1]; n_eps_pequeno <- s$nao_nulos[4]
+n_ref <- rot$nao_nulos_ref
+s$eps <- ifelse(is.na(s$eps), "coordinate descent", format(s$eps, scientific = TRUE))
+names(s) <- c("limiar eps", "coef. não nulos", "distância ao ótimo",
+              "objetivo", "excesso sobre o ótimo")
+tab(s, digits = 5,
+    caption = sprintf("Mesmos dados, mesmo lambda. O ótimo de referência vem de um ajuste independente com tolerância 1e-12, e tem %d coeficientes não nulos.",
+                      n_ref))
+```
+
+::: {.intuicao}
+**Como ler esta tabela, e como conferi-la.** A última coluna é o excesso do
+objetivo sobre o ótimo de referência, e ela **não pode ser negativa** em nenhuma
+linha — se fosse, o "ótimo" não seria ótimo. O código verifica isso com um
+`stopifnot`, de modo que um erro aqui interrompe a execução em vez de virar
+tabela.
+
+Três outras leituras que a tabela permite conferir sozinha: o número de não
+nulos deve crescer quando o limiar diminui; o *coordinate descent* deve estar
+na linha de menor excesso; e a distância ao ótimo **não** vai a zero quando
+$\epsilon\to0$. Esta última é a mais interessante e eu havia subestimado: com
+limiar minúsculo o ridge iterado guarda variáveis extras com coeficientes
+pequenos mas não desprezíveis, e para num ponto vizinho do ótimo — não nele.
+:::
+
+::: {.achado}
+**O defeito não é de eficiência, é de estrutura.**
+
+1. **Nenhum zero exato nasce do algoritmo.** Como $1/|\beta_j|$ explode quando
+   $\beta_j\to0$, é preciso um limiar `eps` arbitrário. A tabela mostra o modelo
+   indo de `r n_eps_grande` a `r n_eps_pequeno` variáveis conforme o limiar, nos
+   mesmos dados e no mesmo $\lambda$ — os zeros são uma decisão do usuário, não um
+   resultado da otimização.
+2. **O descarte é irreversível.** Zerada, a variável sai da matriz de pesos e não
+   volta. Num caminho isso é fatal: variáveis precisam poder reentrar quando
+   $\lambda$ diminui.
+3. **Custo $O(m^3)$ por iteração**, com $m$ o número de variáveis ativas, por causa do sistema linear.
+
+O *coordinate descent* não tem nenhum dos três porque o *soft-thresholding*
+produz zeros **exatos** como resultado da otimização, e um zero exato pode voltar
+a ser não nulo no ciclo seguinte.
+:::
+
+---
+
+# Monte Carlo I: ablação dos ingredientes
+
+## Delineamento
+
+Em vez de comparar esta implementação com outro software — o que confundiria o
+efeito do algoritmo com diferenças de linguagem e compilador — ligamos e
+desligamos os ingredientes **dentro da mesma implementação**.
+
+```{r cod-ec1, results='asis'}
+mostra_trecho("ec1", "05_experimentos.R")
+```
+
+```{r ec1-desenho, results='asis'}
+cat(sprintf("Fatorial com N em {%s}, p em {%s}, rho em {%s} e as 4 configurações, com %d réplicas. A mesma amostra e a mesma grade de lambda são usadas nas quatro (comparação pareada).\n",
+  paste(sort(unique(abl$N)), collapse = ", "),
+  paste(sort(unique(abl$p)), collapse = ", "),
+  paste(sort(unique(abl$rho)), collapse = ", "), PARAM$R_ABL))
+```
+
+## As quatro configurações resolvem o mesmo problema
+
+```{r ec1-correto}
+conv <- abl$convergiu_tudo
+tab(data.frame(
+  Verificação = c("Ajustes em que TODOS os lambdas convergiram",
+                  "Diferença máxima entre os VALORES DO OBJETIVO (relativa)",
+                  "Diferença máxima entre os VETORES de coeficientes",
+                  "Violação KKT máxima, relativa a lambda*alpha",
+                  "Violação KKT máxima, absoluta"),
+  `Todos os ajustes` = c(sprintf("%d de %d", sum(conv), length(conv)),
+                         fmt(max(abl$dif_obj)), fmt(max(abl$difer)),
+                         fmt(max(abl$kkt_rel)), fmt(max(abl$kkt))),
+  `Só os convergidos` = c("—",
+                          fmt(max(abl$dif_obj[conv])), fmt(max(abl$difer[conv])),
+                          fmt(max(abl$kkt_rel[conv])), fmt(max(abl$kkt[conv]))),
+  check.names = FALSE))
+```
+
+```{r ec1-conv-leitura, results='asis'}
+if (all(conv)) cat("Todos os ajustes convergiram em todos os valores de lambda, e as duas colunas coincidem.\n") else
+cat(sprintf("Duas colunas, porque %d dos %d ajustes não convergiram em algum valor de lambda — sempre nas configurações sem *warm start*, e sempre no fim do caminho. Misturar esses ajustes com os demais contamina a verificação: o que eles medem é o limite de iterações, não a corretude do algoritmo. A coluna da direita restringe a comparação aos ajustes que convergiram, e é ela que estabelece a premissa do experimento. Os não convergidos ficam registrados no objeto e entram na leitura de custo, que é justamente onde interessam.\n",
+sum(!conv), length(conv)))
+```
+
+::: {.intuicao}
+**Por que duas medidas de concordância, e não uma.** Comparar os vetores
+$\boldsymbol\beta$ pode enganar. Quando a solução não é única — ou quase não é —
+dois pontos distintos podem ter exatamente o mesmo valor do objetivo, e a
+diferença entre os vetores mede degenerescência do **problema**, não erro do
+**algoritmo**. O objetivo é a medida certa de correção; o vetor de coeficientes é
+a medida certa de reprodutibilidade. Entre os ajustes que convergiram, a
+diferença relativa de objetivo é `r fmt(max(abl$dif_obj[abl$convergiu_tudo]))`, o
+que estabelece a premissa de tudo o que vem depois: *warm start* e *active set*
+são acelerações puras, não estimadores diferentes.
+:::
+
+## Quanto cada ingrediente economiza
+
+```{r fig-ec1, fig.height=4.4}
+t1 <- resume_mc(abl, "visitas", c("cenario", "N", "p", "rho", "rotulo"))
+ggplot(t1, aes(factor(rho), media, fill = rotulo)) +
+  geom_col(position = position_dodge(0.8), colour = "grey20", width = 0.7) +
+  geom_errorbar(aes(ymin = media - ep, ymax = media + ep),
+                position = position_dodge(0.8), width = 0.2, colour = "grey20") +
+  facet_wrap(~ paste0("N = ", N, ", p = ", p), scales = "free_y") +
+  scale_y_continuous(labels = function(z) format(z, big.mark = ".", scientific = FALSE)) +
+  cinza_fill() +
+  guides(fill = guide_legend(nrow = 2)) +
+  labs(x = expression(rho), y = "visitas de coordenada (média ± 1 EP)", fill = NULL,
+       title = "EC1: custo de percorrer o caminho, por configuração",
+       caption = "Cada visita custa O(N). A contagem não depende da máquina.")
+```
+
+```{r tab-ec1}
+vis <- resume_mc(abl, "visitas", c("cenario", "rotulo"))[, c("cenario", "rotulo", "media")]
+tmp <- resume_mc(abl, "tempo",   c("cenario", "rotulo"))[, c("cenario", "rotulo", "media")]
+names(vis)[3] <- "visitas"; names(tmp)[3] <- "segundos"
+t2 <- merge(vis, tmp, by = c("cenario", "rotulo"))
+ref_cen <- subset(t2, rotulo == "warm start + active set")
+t2$relativo <- round(t2$visitas / ref_cen$visitas[match(t2$cenario, ref_cen$cenario)], 2)
+t2 <- t2[order(t2$cenario, t2$rotulo), ]
+sem_warm  <- max(t2$relativo[t2$rotulo == "so active set"])
+sem_ativo <- max(t2$relativo[t2$rotulo == "so warm start"])
+sem_nada  <- max(t2$relativo[t2$rotulo == "nenhum dos dois"])
+t2$visitas <- round(t2$visitas); t2$segundos <- round(t2$segundos, 3)
+names(t2) <- c("cenário", "configuração", "visitas (média)", "segundos", "custo relativo")
+tab(t2[, c("cenário", "configuração", "visitas (média)", "custo relativo", "segundos")],
+    caption = "Custo relativo ao caminho completo (1,00 = referência; maior é pior).")
+```
+
+```{r ec1-leitura, results='asis'}
+rel <- function(cen, rot) t2$`custo relativo`[t2$cenário == cen & t2$configuração == rot]
+cens <- unique(t2$cenário)
+linhas_int <- vapply(cens, function(cn) sprintf(
+  "| %s | %.2f | %.2f | %.2f |", cn, rel(cn, "so active set"),
+  rel(cn, "so warm start"), rel(cn, "nenhum dos dois")), character(1))
+piora <- vapply(cens, function(cn)
+  rel(cn, "so active set") > rel(cn, "nenhum dos dois"), logical(1))
+
+cat("\n::: {.achado}\n**O *warm start* é o ingrediente dominante, e há interação entre os dois.**\n\n",
+"| cenário | sem warm start | sem active set | sem nenhum dos dois |\n",
+"|:--|--:|--:|--:|\n", paste(linhas_int, collapse = "\n"), "\n\n", sep = "")
+
+if (any(piora)) cat(sprintf(
+"Repare na anomalia: em %s, desligar o *warm start* mantendo o *active set* custa **mais** do que desligar os dois. O motivo é mecânico. Numa partida fria o conjunto ativo começa vazio e cresce aos poucos; o laço interno converge cuidadosamente sobre um conjunto que ainda está errado, e todo esse trabalho é refeito quando o ciclo completo seguinte admite variáveis novas. **O *active set* isoladamente pode ser um prejuízo — ele só paga quando o *warm start* já entrega um conjunto quase certo.** É por isso que os ganhos não se multiplicam: os dois ingredientes não são independentes, o segundo depende do primeiro.\n",
+paste(cens[piora], collapse = " e ")))
+
+cat("\nOs dois atacam eixos diferentes do custo — o *warm start* reduz **quantos ciclos** são necessários, o *active set* reduz **o custo de cada ciclo** — mas a figura seguinte mostra que esses eixos não são separáveis.\n:::\n")
+```
+
+```{r fig-ec1b, fig.height=3.4}
+cc <- resume_mc(abl, "ciclos",  "rotulo")[, c("rotulo", "media")]
+vv <- resume_mc(abl, "visitas", "rotulo")[, c("rotulo", "media")]
+names(cc)[2] <- "ciclos"; names(vv)[2] <- "visitas"
+m <- merge(cc, vv, by = "rotulo")
+dd <- rbind(data.frame(rotulo = m$rotulo, eixo = "ciclos executados", media = m$ciclos),
+            data.frame(rotulo = m$rotulo, eixo = "visitas por ciclo",
+                       media = m$visitas / m$ciclos))
+ggplot(dd, aes(media, rotulo)) +
+  geom_col(fill = "grey80", colour = "grey25", width = 0.6) +
+  facet_wrap(~ eixo, scales = "free_x") +
+  labs(x = NULL, y = NULL, title = "Os dois ingredientes agem em eixos diferentes")
+```
+
+## E a correlação?
+
+```{r ec1-rho}
+mrho <- resume_mc(abl, "visitas", c("rho", "rotulo"))
+mrho$media <- round(mrho$media); mrho$ep <- round(mrho$ep)
+names(mrho) <- c("rho", "configuração", "visitas (média)", "EP", "R")
+tab(mrho)
+```
+
+```{r ec1-rho-leitura, results='asis'}
+rr <- resume_mc(abl, "visitas", c("rho", "rotulo"))
+r_alto <- max(rr$rho); r_baixo <- min(rr$rho)
+fator <- function(rot) {
+  a <- rr$media[rr$rho == r_alto  & rr$rotulo == rot]
+  b <- rr$media[rr$rho == r_baixo & rr$rotulo == rot]
+  a / b
+}
+cat(sprintf(
+"Os autores registram ter esperado que a correlação alta aumentasse o tempo e não terem observado isso. Aqui, passar de rho = %s para rho = %s multiplica o custo por %.1f× na configuração completa e por %.1f× sem *warm start*. As duas posições se reconciliam: a teoria de otimização está certa sobre o *coordinate descent* cíclico, e os autores estão certos sobre o **algoritmo deles**, porque o *warm start* absorve boa parte do problema.\n",
+r_baixo, r_alto, fator("warm start + active set"), fator("so active set")))
+```
+
+---
+
+# Monte Carlo II: o que o caminho barato permitiu
+
+## A hipótese
+
+Em 1996, critérios analíticos eram atraentes **porque a *cross-validation* era
+cara**: $K$ *folds* sobre $G$ valores custavam $K \times G$ execuções completas e
+independentes do otimizador. Depois de 2010 a mesma CV custa $K+1$ **caminhos**, e
+um caminho inteiro custa da ordem de um único ajuste — com 100 valores de
+$\lambda$ e 10 *folds*, mil execuções contra onze caminhos. Os critérios
+analíticos deixaram silenciosamente de ser recomendados. A troca compensou?
+
+```{r cod-ec2, results='asis'}
+mostra_trecho("ec2", "05_experimentos.R")
+```
+
+Cinco regras aplicadas ao **mesmo caminho**, na mesma réplica — comparação
+pareada. $N=150$, $p=60$, seis efeitos em escada de $2$ a $0{,}25$, razão
+sinal-ruído 2, `r PARAM$R_CRI` réplicas por cenário.
+
+::: {.intuicao}
+**Por que efeitos em escada.** Numa primeira versão deste experimento os seis
+coeficientes verdadeiros eram todos fortes, e o resultado foi que **todos os
+critérios acertaram todos**: a taxa de verdadeiros positivos ficou presa em 1 nos
+quinze cenários, sem poder de discriminação nenhum. Um delineamento em que a
+tarefa é fácil demais não compara nada. O gradiente de magnitudes, do óbvio ao
+quase indistinguível do ruído, é o que faz a métrica voltar a informar.
+:::
+
+## Resultados
+
+```{r fig-ec2, fig.height=4.2}
+e2 <- resume_mc(cri, "eqm_mu", c("rho", "criterio"))
+ggplot(e2, aes(criterio, media, fill = criterio)) +
+  geom_col(colour = "grey20", width = 0.68, show.legend = FALSE) +
+  geom_errorbar(aes(ymin = media - ep, ymax = media + ep), width = 0.2,
+                colour = "grey20") +
+  facet_wrap(~ paste0("rho = ", rho)) +
+  cinza_fill() +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
+  labs(x = NULL, y = "erro quadrático contra E(y|x) (média ± 1 EP)",
+       title = "EC2: cinco regras de escolha de lambda, mesmo caminho",
+       caption = "Menor é melhor. Comparação pareada dentro de cada réplica.")
+```
+
+```{r fig-ec2b, fig.height=3.8}
+sel2 <- do.call(rbind, lapply(c("TPR", "FPR", "tamanho"), function(v) {
+  s <- resume_mc(cri, v, c("rho", "criterio"))
+  data.frame(metrica = v, rho = s$rho, criterio = s$criterio,
+             media = s$media, ep = s$ep)
+}))
+sel2$metrica <- factor(sel2$metrica, levels = c("TPR", "FPR", "tamanho"),
+                       labels = c("TPR (efeitos verdadeiros achados)",
+                                  "FPR (falsos positivos)", "tamanho do modelo"))
+ggplot(sel2, aes(factor(rho), media, group = criterio,
+                 linetype = criterio, shape = criterio)) +
+  geom_line(colour = "grey25") +
+  geom_point(fill = "white", colour = "grey10", size = 2) +
+  facet_wrap(~ metrica, scales = "free_y") +
+  scale_shape_manual(values = c(21, 22, 24, 23, 25)) +
+  scale_linetype_manual(values = c("solid", "22", "44", "13", "1343")) +
+  guides(linetype = guide_legend(nrow = 2), shape = guide_legend(nrow = 2)) +
+  labs(x = expression(rho), y = "média (± 1 EP)", linetype = NULL, shape = NULL,
+       title = "EC2: o que cada critério faz com a seleção de variáveis")
+```
+
+```{r tab-ec2}
+t2b <- Reduce(function(a, b) merge(a, b, by = c("rho", "criterio")),
+  lapply(c("eqm_mu", "tamanho", "TPR", "FPR"), function(v) {
+    s <- resume_mc(cri, v, c("rho", "criterio"))[, c("rho", "criterio", "media")]
+    names(s)[3] <- v; s
+  }))
+t2b <- t2b[order(t2b$rho, t2b$criterio), ]
+melhor  <- names(sort(tapply(cri$eqm_mu, cri$criterio, mean)))[1]
+menor_m <- names(sort(tapply(cri$tamanho, cri$criterio, mean)))[1]
+lim <- tapply(cri$no_limite, cri$criterio, mean)
+t2b <- merge(t2b, data.frame(criterio = names(lim), no_limite = as.numeric(lim)),
+             by = "criterio")
+t2b <- t2b[order(t2b$rho, t2b$criterio), c("rho", "criterio", "eqm_mu",
+                                           "tamanho", "TPR", "FPR", "no_limite")]
+names(t2b) <- c("rho", "critério", "erro vs E(y|x)", "tamanho", "TPR", "FPR",
+                "prop. no limite da grade")
+tab(t2b, digits = 4)
+```
+
+```{r ec2-leitura, results='asis'}
+cat(sprintf(
+"\n::: {.achado}\n**Duas conclusões que vão além de comparar médias.**\n\n*A CV é a única regra definida em todo o caminho.* AIC, BIC e GCV usam graus de liberdade estimados por |A|, o numero de coeficientes nao nulos, e deixam de fazer sentido quando |A| >= N — situação corriqueira no início do caminho quando p > N. O GCV é o caso mais visível: o fator (1 - gl/N)^(-2) explode. Quando a viabilidade computacional mudou, o método que ficou barato também era o mais geral.\n\n*A justificativa teórica veio depois do uso.* Usar |A| como graus de liberdade do lasso só foi justificado por Zou, Hastie e Tibshirani (2007), **depois** de o critério já estar em uso.\n\nNeste delineamento o menor erro médio contra E(y|x) ficou com **%s**, e o modelo mais parcimonioso com **%s**.\n\nA última coluna da tabela merece atenção: ela dá a proporção de réplicas em que o critério escolheu o ÚLTIMO valor da grade de lambda. Uma proporção alta não é uma escolha, é uma reclamação — o critério queria ir além do que o caminho ofereceu, e o que se reporta ali é a fronteira da grade, não o ótimo do critério.\n:::\n",
+melhor, menor_m))
+```
+
+---
+
+# Contribuição original: a ordem de visita das coordenadas
+
+## A lacuna, e o que a teoria diz
+
+O artigo varre as coordenadas na ordem $j=1,\dots,p$ e **nunca justifica essa
+escolha**. Ela aparece como detalhe de implementação. Mas quando duas colunas são
+**exatamente** linearmente dependentes, o conjunto de soluções ótimas do lasso é
+uma *face* do poliedro, não um ponto: qualquer divisão do coeficiente entre as
+colunas dependentes tem o mesmo ajuste e a mesma norma $\ell_1$, logo o mesmo
+objetivo. O *coordinate descent* devolve **um** ponto dessa face, e qual ponto
+depende de quem foi visitado primeiro.
+
+```{r fig-vale, fig.width=6.2, fig.height=4.4}
+vv2 <- vale_nao_unicidade(N = 120, lambda = 0.25, n = 55)
+op <- par(mar = c(0.5, 0.5, 2.2, 0.5))
+desenha_3d(vv2$lasso, theta = 42, phi = 22,
+           titulo = "Lasso com duas colunas idênticas: o vale tem fundo plano")
+par(op)
+```
+
+Um segundo painel 3D para a *elastic net* não ajudaria: o termo $\ell_2$ muda a
+superfície muito pouco em valor absoluto, e as duas imagens sairiam
+indistinguíveis. O que separa os dois casos é a inclinação **ao longo do fundo do
+vale** — e para isso basta uma linha.
+
+```{r fig-perfil, fig.height=3.6}
+pv <- perfil_vale(N = 120, lambda = 0.25, alphas = c(1, 0.9, 0.5))
+pv$rotulo <- factor(pv$rotulo, levels = unique(pv$rotulo))
+ggplot(pv, aes(t, relativo, linetype = rotulo)) +
+  geom_line(colour = "grey10", linewidth = 0.7) +
+  geom_vline(xintercept = 0.5, colour = "grey80", linewidth = 0.3) +
+  scale_linetype_manual(values = c("solid", "22", "44")) +
+  guides(linetype = guide_legend(nrow = 2)) +
+  labs(x = "como a soma é dividida:  beta1 = t.s,  beta2 = (1-t).s",
+       y = "objetivo menos o mínimo", linetype = NULL,
+       title = "Percorrendo o fundo do vale, da divisão (0, s) até (s, 0)",
+       caption = "No lasso a curva é exatamente plana: toda divisão é igualmente ótima. O algoritmo escolhe uma delas, e quem escolhe é a ordem de visita.")
+```
+
+```{r fig-vale2, fig.width=9, fig.height=3.9}
+gl <- transform(grade_df(vv2$lasso), tipo = "lasso (alpha = 1)")
+ge <- transform(grade_df(vv2$enet),  tipo = "elastic net (alpha = 0,5)")
+gv <- rbind(gl, ge)
+otimos <- do.call(rbind, lapply(split(gv, gv$tipo), function(z)
+  z[z$obj <= min(z$obj) * (1 + 1e-6), ]))
+ggplot(gv, aes(b1, b2)) +
+  geom_contour(aes(z = obj), bins = 30, colour = "grey72", linewidth = 0.3) +
+  geom_point(data = otimos, colour = "grey5", size = 0.7) +
+  facet_wrap(~ tipo) + coord_equal() +
+  labs(x = expression(beta[1]), y = expression(beta[2]),
+       title = "Onde estão os pontos ótimos",
+       caption = "Pontos escuros: valores a menos de 1e-6 do mínimo. À esquerda formam um segmento; à direita, um ponto.")
+```
+
+```{r copias}
+tab(cbind(variável = rownames(cop$lasso), as.data.frame(round(cop$lasso, 4))),
+    caption = "Lasso: coeficientes de três cópias exatas, sob três ordens de visita.")
+tab(cbind(variável = rownames(cop$elastic_net), as.data.frame(round(cop$elastic_net, 4))),
+    caption = "Com alpha = 0,5: a mesma coisa, com penalidade estritamente convexa.")
+```
+
+::: {.intuicao}
+**Intuição.** Com $\mathbf{x}_1=\mathbf{x}_2$, o ajuste só enxerga a soma
+$\beta_1+\beta_2$, e a penalidade $\ell_1$ também só enxerga a soma (desde que os
+sinais sejam iguais). Duas funções que dependem apenas da soma têm o mesmo valor
+ao longo de toda a reta $\beta_1+\beta_2=c$: o fundo do vale é plano. O termo
+$\ell_2$ quebra o empate porque $\beta_1^2+\beta_2^2$ **não** depende só da soma —
+é mínimo quando os dois são iguais. Daí a divisão igualitária.
+
+Note nas tabelas que a **soma** dos coeficientes é a mesma nas três ordens. O que
+muda é a atribuição. O modelo prediz igual e conta uma história diferente.
+:::
+
+## Correlação alta não é o mesmo que dependência exata
+
+```{r cod-sel, results='asis'}
+mostra_trecho("ordem_selecao", "06_contribuicao.R")
+```
+
+```{r tab-sel-rho}
+ts <- Reduce(function(a, b) merge(a, b, by = c("rho_g", "alpha")),
+  lapply(c("jaccard", "amplitude_obj", "intercambiaveis", "recuperacao", "eqm_mu"),
+         function(v) {
+           s <- resume_mc(sel, v, c("rho_g", "alpha"))[, c("rho_g", "alpha", "media")]
+           names(s)[3] <- v; s
+         }))
+ts <- ts[order(ts$rho_g, -ts$alpha), ]
+names(ts) <- c("correlação no grupo", "alpha", "Jaccard sob reordenação",
+               "amplitude do objetivo", "intercambiáveis",
+               "recuperação do grupo", "erro vs E(y|x)")
+tab(ts, digits = 4,
+    caption = "Correlação igual a 1 significa colunas exatamente idênticas.")
+```
+
+```{r fig-sel, fig.height=3.8}
+sj <- resume_mc(sel, "jaccard", c("rho_g", "alpha"))
+ggplot(sj, aes(factor(alpha), media, group = factor(rho_g),
+               linetype = factor(rho_g), shape = factor(rho_g))) +
+  geom_line(colour = "grey25") +
+  geom_errorbar(aes(ymin = media - ep, ymax = media + ep), width = 0.12,
+                colour = "grey50") +
+  geom_point(size = 2.3, fill = "white", colour = "grey10") +
+  scale_shape_manual(values = c(21, 22, 24)) +
+  scale_linetype_manual(values = c("solid", "22", "44")) +
+  labs(x = expression(alpha~"(1 = lasso puro)"), y = "Jaccard sob reordenação",
+       linetype = "correlação\nno grupo", shape = "correlação\nno grupo",
+       title = "Instabilidade é fenômeno de dependência exata, não de correlação alta",
+       caption = "Jaccard = 1 significa que a mesma lista de variáveis aparece em toda reordenação.")
+```
+
+```{r sel-leitura, results='asis'}
+j_099 <- mean(sel$jaccard[sel$rho_g == 0.99 & sel$alpha == 1])
+j_100 <- mean(sel$jaccard[sel$rho_g == 1    & sel$alpha == 1])
+
+## o preco do remedio: qual o menor alpha < 1 que ja restaura a unicidade, e
+## quanto ele custa em erro de predicao, no cenario de dependencia exata
+sub1 <- subset(sel, rho_g == 1)
+res1 <- resume_mc(sub1, "jaccard", "alpha")
+err1 <- resume_mc(sub1, "eqm_mu",  "alpha")
+al_ok <- res1$alpha[res1$alpha < 1 & res1$media > 0.999]
+remedio <- if (length(al_ok)) {
+  a_barato <- max(al_ok)
+  e_um <- err1$media[err1$alpha == 1]
+  e_ba <- err1$media[err1$alpha == a_barato]
+  sprintf("**E o remédio é praticamente de graça.** Com colunas exatamente idênticas, alpha = %s já devolve Jaccard 1 — seleção perfeitamente estável — e o erro contra E(y|x) passa de %.4f para %.4f, uma diferença de %.1f%%. Não é preciso abandonar a parcimônia do lasso para recuperar a unicidade: basta não estar exatamente em alpha = 1.\n\n",
+          format(a_barato), e_um, e_ba, 100 * (e_ba - e_um) / e_um)
+} else ""
+
+cat(sprintf(
+"\n::: {.achado}\n**O resultado contrariou a expectativa inicial — e isso é o achado.** A primeira versão deste experimento usava apenas correlação intragrupo 0,99 e encontrou Jaccard próximo de 1: praticamente nenhuma instabilidade. Aqui, com alpha = 1, o Jaccard médio é %.3f sob correlação 0,99 e %.3f sob colunas exatamente idênticas.\n\nA explicação é teórica e está em R. J. Tibshirani (2013): com preditores de distribuição contínua, colunas distintas produzem solução de lasso **única com probabilidade 1**. Correlação alta não gera degenerescência; **dependência exata** gera.\n\nIsso não é curiosidade. Dependência exata é comum em dados aplicados — indicadoras redundantes, variáveis derivadas de outras, totais que são soma de partes, e todo caso com p > N — e é justamente onde ninguém procura, porque a saída do algoritmo parece perfeitamente determinada.\n\n%s:::\n",
+j_099, j_100, remedio))
+```
+
+## O segundo mecanismo, e por que ele se confunde com o primeiro
+
+Existe uma segunda fonte de variação sob reordenação, de natureza completamente
+diferente: com tolerância finita, coeficientes numericamente minúsculos oscilam
+entre zero e não zero conforme a ordem de visita. Para quem lê a saída, isso é
+indistinguível de degenerescência verdadeira — e o remédio é o oposto (apertar a
+tolerância, não trocar de estimador).
+
+```{r cod-diag, results='asis'}
+mostra("diagnostico_ordem", "06_contribuicao.R")
+```
+
+::: {.achado}
+**A proposta: um diagnóstico que separa os dois.** Reajuste $B$ vezes com ordens
+de visita sorteadas e olhe **duas** coisas:
+
+| Conjunto selecionado | Valor do objetivo | Diagnóstico |
+|:--|:--|:--|
+| varia | constante | **não unicidade verdadeira** — os pontos são igualmente ótimos |
+| varia | varia | **convergência incompleta** — aperte a tolerância antes de concluir |
+| constante | constante | seleção estável |
+
+Reamostragem *bootstrap*, o instrumento usual para avaliar estabilidade de
+seleção, não faz essa distinção: ela muda os dados e, portanto, mistura
+degenerescência, erro numérico e incerteza amostral numa medida só. Aqui os dados
+e o $\lambda$ são sempre os mesmos — a única coisa que muda é a ordem de visita.
+
+O limiar de magnitude cumpre o mesmo papel do outro lado: sem ele, um coeficiente
+de $10^{-12}$ conta como variável do modelo, e o diagnóstico mede ruído de
+arredondamento em vez de estrutura.
+:::
+
+## A ordem afeta a velocidade?
+
+```{r cod-vel, results='asis'}
+mostra_trecho("ordem_velocidade", "06_contribuicao.R")
+```
+
+```{r tab-vel}
+v1 <- resume_mc(vel, "visitas", c("rho", "ordem"))
+pega <- function(o, col) v1[[col]][v1$ordem == o][order(v1$rho[v1$ordem == o])]
+v2 <- data.frame(
+  rho = sort(unique(v1$rho)),
+  `cíclica` = round(pega("ciclica", "media")),
+  `EP cíclica` = round(pega("ciclica", "ep")),
+  `aleatória` = round(pega("aleatoria", "media")),
+  `EP aleatória` = round(pega("aleatoria", "ep")),
+  `razão` = round(pega("aleatoria", "media") / pega("ciclica", "media"), 3),
+  check.names = FALSE)
+tab(v2, caption = sprintf("N = 100, p = 200, preditores equicorrelacionados, %d réplicas.",
+                          PARAM$R_VEL))
+```
+
+```{r fig-vel, fig.height=3.4}
+ggplot(v1, aes(factor(rho), media, fill = ordem)) +
+  geom_col(position = position_dodge(0.75), colour = "grey20", width = 0.65) +
+  geom_errorbar(aes(ymin = media - ep, ymax = media + ep),
+                position = position_dodge(0.75), width = 0.18, colour = "grey20") +
+  scale_y_continuous(labels = function(z) format(z, big.mark = ".", scientific = FALSE)) +
+  cinza_fill() +
+  labs(x = expression(rho), y = "visitas de coordenada (média ± 1 EP)",
+       fill = "ordem de visita",
+       title = "Aleatorizar a ordem de varredura acelera o caminho?")
+```
+
+```{r vel-leitura, results='asis'}
+raz <- v2$`razão`; rho_v <- v2$rho
+i_max <- which.min(raz)
+sobrepoe <- function(i) {
+  a <- v2$`cíclica`[i]; ea <- v2$`EP cíclica`[i]
+  b <- v2$`aleatória`[i]; eb <- v2$`EP aleatória`[i]
+  abs(a - b) < (ea + eb)
+}
+cat(sprintf(
+"O efeito depende do regime, e o sinal muda. O ganho maior aparece em rho = %s, onde a ordem aleatória gasta %.0f%% das visitas da cíclica; em rho = %s a razão é %.2f. As barras de erro %s nesse melhor caso, com %d réplicas.
+
+",
+rho_v[i_max], 100 * raz[i_max], rho_v[1], raz[1],
+ifelse(sobrepoe(i_max), "ainda se sobrepõem", "não se sobrepõem"), PARAM$R_VEL))
+cat("::: {.achado}\n**Este é o resultado mais claro da seção, e ele contraria o artigo.** Os autores registram não ter observado degradação com correlação alta. Sob varredura cíclica, com preditores equicorrelacionados, a degradação existe e é enorme — e trocar a varredura por uma ordem sorteada a cada ciclo devolve boa parte do que se perdeu, exatamente como a teoria de otimização prevê e como a figura da Seção 4 ilustra: a ordem fixa escorrega pela parede do vale, a ordem sorteada não fica presa no mesmo padrão.\n\nO sinal se inverte quando não há correlação, e faz sentido: sem elipses alongadas não há zigue-zague para desfazer, e sortear a ordem só acrescenta desordem à sequência de atualizações do resíduo.\n\nA ressalva que fica: com correlação equicorrelacionada alta os preditores são quase a mesma variável e o *active set* é pequeno, então este delineamento é favorável ao efeito. Um teste com correlação AR(1) e muitas variáveis genuinamente ativas diria se o ganho sobrevive ao caso mais comum na prática.\n:::\n")
+```
+
+---
+
+# Aplicação a dados reais
+
+## Os dados
+
+```{r cod-dados, results='asis'}
+mostra("carrega_dados", "07_aplicacao.R")
+```
+
+*Communities and Crime* (Redmond, 2002; UCI, DOI 10.24432/C53W3X, CC BY 4.0):
+`r nrow(dcr$X)` comunidades dos EUA e `r ncol(dcr$X)` preditores após a limpeza,
+resposta = crimes violentos por 100 mil habitantes. Não é o conjunto do artigo
+(expressão genética) nem o dos tutoriais do `glmnet`. Foram descartadas
+`r dcr$n_descartadas` variáveis por excesso de faltantes — as da pesquisa LEMAS,
+ausentes em 84% das comunidades.
+
+```{r fig-colin, fig.height=3.2}
+ggplot(data.frame(mc = app$colinearidade), aes(mc)) +
+  geom_histogram(bins = 30, fill = "grey80", colour = "grey25", linewidth = 0.3) +
+  geom_vline(xintercept = 0.8, linetype = "dashed", colour = "grey30") +
+  labs(x = "maior |correlação| com alguma outra covariável", y = "nº de covariáveis",
+       title = "Neste conjunto a colinearidade é a regra, não a exceção",
+       caption = sprintf("%.0f%% das covariáveis têm correlação absoluta acima de 0,8 com alguma outra.",
+                         100 * mean(app$colinearidade > 0.8)))
+```
+
+## O caminho, e a escolha de $\lambda$
+
+```{r fig-caminho, fig.height=4.0}
+fitA <- app$ajuste
+camA <- caminho_para_df(fitA)
+b_min <- fitA$beta[, app$cv$i_min]
+destaque <- order(-abs(b_min))[1:6]
+camA$grupo <- ifelse(camA$j %in% destaque, "6 maiores em lambda.min", "demais")
+ggplot(camA, aes(log(lambda), coef, group = j, colour = grupo, linewidth = grupo)) +
+  geom_hline(yintercept = 0, colour = "grey75", linewidth = 0.3) +
+  geom_line() +
+  geom_vline(xintercept = log(app$cv$lambda_min), linetype = "dashed", colour = "grey30") +
+  geom_vline(xintercept = log(app$cv$lambda_1se), linetype = "dotted", colour = "grey30") +
+  scale_colour_grey(start = 0.05, end = 0.82) +
+  scale_linewidth_manual(values = c("6 maiores em lambda.min" = 0.8, "demais" = 0.25),
+                         guide = "none") +
+  labs(x = expression(log(lambda)), y = "coeficiente", colour = NULL,
+       title = "O regularization path nos dados reais",
+       caption = "Tracejada: lambda.min. Pontilhada: regra de 1 erro-padrão. Cada curva é uma covariável.")
+```
+
+```{r fig-cv, fig.height=3.6}
+cvd <- data.frame(ll = log(app$cv$lambda), m = app$cv$cvm, s = app$cv$cvse)
+brk <- unique(round(seq(1, length(app$cv$lambda), length.out = 8)))
+ggplot(cvd, aes(ll, m)) +
+  geom_ribbon(aes(ymin = m - s, ymax = m + s), fill = "grey85") +
+  geom_line(colour = "grey15", linewidth = 0.6) +
+  geom_point(colour = "grey25", size = 1) +
+  geom_vline(xintercept = log(app$cv$lambda_min), linetype = "dashed", colour = "grey20") +
+  geom_vline(xintercept = log(app$cv$lambda_1se), linetype = "dotted", colour = "grey20") +
+  scale_x_continuous(sec.axis = sec_axis(~ ., breaks = log(app$cv$lambda)[brk],
+                                         labels = app$cv$df[brk],
+                                         name = "coeficientes não nulos")) +
+  labs(x = expression(log(lambda)), y = "erro quadrático médio (CV 10-fold)",
+       title = "Cross-validation nos dados reais")
+```
+
+```{r app-desemp}
+dp <- app$desempenho
+names(dp) <- c("regra", "lambda", "tamanho", "EQM no teste")
+tab(dp, digits = 5,
+    caption = sprintf("%d observações de treino, %d de teste, %d preditores.",
+                      app$n_treino, app$n_teste, app$p))
+```
+
+```{r app-leitura, results='asis'}
+d_mqo <- app$desempenho$eqm_teste[app$desempenho$regra == "MQO (sem penalizacao)"]
+d_1ep <- app$desempenho$eqm_teste[app$desempenho$regra == "CV (1 EP)"]
+t_1ep <- app$desempenho$tamanho[app$desempenho$regra == "CV (1 EP)"]
+cat(sprintf(
+"Com N/p em torno de %.0f, a penalização compra pouco em predição: a regra de 1 erro-padrão fica %.1f%% %s que o MQO no conjunto de teste. O que ela compra é parcimônia — %d variáveis contra %d. Em conjuntos assim o argumento a favor da regularização é interpretativo e de estabilidade, não preditivo, e é honesto dizer isso.\n",
+app$n_treino / app$p, 100 * abs(d_1ep - d_mqo) / d_mqo,
+ifelse(d_1ep > d_mqo, "pior", "melhor"), t_1ep, app$p))
+```
+
+## O diagnóstico de reordenação, aplicado
+
+Aqui o diagnóstico roda **duas vezes** sobre os mesmos dados, mesmo $\lambda$ e
+mesmo estimador, mudando apenas o critério de parada: o absoluto usual
+($\max_j(\Delta\beta_j)^2 < 10^{-7}$, a ordem de grandeza do `glmnet`) e o
+proporcional a $\lambda$ adotado neste trabalho.
+
+```{r app-diag}
+dl <- app$diag_lasso; de <- app$diag_en; ds <- app$diag_solto
+tab(data.frame(
+  ajuste = c("lasso, critério absoluto (usual)",
+             "lasso, critério proporcional a lambda",
+             "elastic net (alpha = 0,5), proporcional"),
+  `Jaccard sob reordenação` = c(ds$jaccard_limiar, dl$jaccard_limiar, de$jaccard_limiar),
+  `amplitude do objetivo` = c(ds$amplitude_obj, dl$amplitude_obj, de$amplitude_obj),
+  `tamanho médio` = c(ds$tamanho_medio, dl$tamanho_medio, de$tamanho_medio),
+  `intercambiáveis` = c(ds$intercambiaveis, dl$intercambiaveis, de$intercambiaveis),
+  check.names = FALSE), digits = 4,
+  caption = sprintf("%d reajustes com ordens de visita sorteadas.", PARAM$B_ORD))
+```
+
+```{r fig-app-diag, fig.height=4.2}
+monta <- function(dg, rot) {
+  f <- data.frame(variavel = names(dg$freq), freq = as.numeric(dg$freq),
+                  ajuste = rot)
+  subset(f, freq > 0 & freq < 1)
+}
+fr <- rbind(monta(ds, "critério absoluto (usual)"),
+            monta(dl, "critério proporcional a lambda"))
+
+if (nrow(fr) == 0) {
+  ggplot(data.frame(x = 1, y = 1), aes(x, y)) +
+    annotate("text", x = 1, y = 1, size = 4, colour = "grey20",
+             label = "Nenhuma variável intercambiável sob nenhum dos dois critérios:\ntoda variável é sempre ou nunca selecionada.") +
+    theme_void()
+} else {
+  ord <- unique(fr$variavel[order(-fr$freq)])
+  fr$variavel <- factor(fr$variavel, levels = rev(ord))
+  ggplot(fr, aes(freq, variavel)) +
+    geom_col(fill = "grey80", colour = "grey25", width = 0.7) +
+    facet_wrap(~ ajuste) + xlim(0, 1) +
+    labs(x = "frequência de seleção sob reordenação das coordenadas", y = NULL,
+         title = "Somente as variáveis que NÃO são sempre nem nunca selecionadas",
+         caption = "Variáveis com frequência 0 ou 1 foram omitidas — são a maioria e não informam nada.")
+}
+```
+
+```{r app-diag-leitura, results='asis'}
+cat(sprintf(
+"::: {.achado}\n**O diagnóstico fez exatamente o que foi desenhado para fazer, e o resultado é um alerta.** Com o critério absoluto, %d variáveis aparecem como intercambiáveis e o Jaccard cai para %.3f. Com o critério proporcional a lambda, sobram %d e o Jaccard vai a %.3f. Os dados são os mesmos, o lambda é o mesmo, o estimador é o mesmo.\n\n",
+ds$intercambiaveis, ds$jaccard_limiar, dl$intercambiaveis, dl$jaccard_limiar))
+
+cat(sprintf(
+"A amplitude do objetivo entre as reordenações é %s no primeiro caso e %s no segundo — em ambos, muito abaixo de qualquer diferença substantiva. Segundo a tabela de decisão da seção anterior, conjunto que varia com objetivo constante indicaria não unicidade. Mas a instabilidade **desaparece** quando a tolerância aperta, e não há como uma degenerescência genuína desaparecer por isso: era %s.\n\n",
+fmt(ds$amplitude_obj), fmt(dl$amplitude_obj),
+if (dl$intercambiaveis < ds$intercambiaveis) "coeficientes numericamente minúsculos oscilando entre zero e não zero, conforme a ordem de visita" else "ruído de arredondamento"))
+
+cat("**A lição, que vale além deste conjunto de dados.** Se tivéssemos parado na primeira execução, teríamos escrito que a lista de fatores associados à criminalidade violenta é instável e que parte dela é artefato de ordenação — uma afirmação substantiva, publicável, e **errada**. O que havia era tolerância frouxa. É por isso que o diagnóstico precisa das duas peças: reordenar expõe o sintoma, e o valor do objetivo mais o aperto da tolerância dizem qual é a doença.\n:::\n")
+```
+
+::: {.achado}
+**Recomendação prática.** Ao reportar variáveis selecionadas por lasso em dados
+colineares: (i) rode o ajuste com ordens de visita sorteadas e publique a
+frequência de seleção; (ii) antes de interpretar qualquer instabilidade, repita
+com a tolerância apertada. O primeiro passo custa `r PARAM$B_ORD` ajustes; o
+segundo custa um.
+
+O modelo continua válido para predição em qualquer caso — o erro fora da amostra
+é o mesmo. O que está em jogo é a leitura da lista de variáveis, que é o uso mais
+comum em ciências sociais aplicadas.
+:::
+
+---
+
+# Conclusões
+
+1. **O recorte se sustenta.** O caminho com *warm starts* é a peça que 1996 não
+   tinha, é o que os autores de fato reivindicam, e é aquilo de que todas as
+   demais partes do artigo dependem.
+
+2. **A implementação está correta**, verificada contra o caso ortonormal de 1996
+   e contra as condições KKT ao longo de todo o caminho — nunca contra outra
+   implementação, o que seria circular.
+
+3. **Os ingredientes são acelerações puras** (EC1): as quatro configurações
+   atingem o mesmo valor do objetivo, com diferença relativa
+   `r fmt(max(abl$dif_obj[abl$convergiu_tudo]))`. O *warm start* domina, os
+   ganhos se sobrepõem, e a
+   correlação encarece o *coordinate descent* — mas o *warm start* absorve boa
+   parte disso, o que reconcilia a teoria de otimização com o que os autores
+   relatam.
+
+4. **O caminho barato mudou a prática** (EC2): a *cross-validation* compete em
+   erro de predição e é a única regra que permanece bem definida quando o modelo
+   cresce.
+
+5. **A ordem de visita não é um detalhe de implementação** (contribuição): sob
+   dependência exata ela determina qual variável de um grupo aparece no modelo,
+   e a simulação confirma que o fenômeno é de dependência **exata**, não de
+   correlação alta. Nos dados reais o diagnóstico apontou o outro mecanismo: a
+   instabilidade aparente vinha da tolerância, e sumiu ao apertá-la. Separar as
+   duas causas é o que o *bootstrap* não consegue fazer, e é a contribuição.
+
+6. **A lição geral.** Em 1996 havia um estimador que quase não se conseguia
+   calcular, e critérios analíticos existiam em boa parte para contornar o custo
+   do cálculo. Quando o custo caiu, os critérios saíram de cena e a
+   *cross-validation* virou padrão. *Como calcular* redefiniu *o que estimar*.
+
+## Limitações
+
+- Laços interpretados em R: as escalas **absolutas** de tempo não são comparáveis
+  às do artigo (Fortran). Por isso o custo é reportado em visitas de coordenada.
+- Não implementamos GLMs, *covariance updates*, multinomial nem resposta
+  agrupada.
+- O experimento de velocidade da ordem de varredura usa preditores
+  equicorrelacionados, delineamento favorável ao efeito medido. Refazê-lo com
+  correlação AR(1) e muitas variáveis ativas é trabalho pendente.
+- Nas configurações sem *warm start* alguns ajustes atingem o limite de
+  iterações no fim do caminho. Isso está registrado no objeto e reportado, mas
+  significa que o custo dessas configurações é uma **subestimativa**: elas
+  pararam antes de resolver.
+- O diagnóstico de reordenação detecta não unicidade, mas não a resolve; o
+  remédio testado ($\alpha<1$) muda o estimador.
+- O critério de parada proporcional a $\lambda$ resolve a falta de equivariância,
+  mas a constante `tol` continua arbitrária. Um critério que devolvesse um
+  certificado explícito — parar quando a violação KKT relativa cai abaixo de um
+  limiar — seria mais honesto, ao custo de tornar a auditoria KKT parte do
+  algoritmo em vez de uma verificação independente.
+- Nada aqui trata de inferência após seleção.
+
+---
+
+# Referências {-}
+
+- Tibshirani, R. (1996). Regression Shrinkage and Selection via the Lasso. *JRSS-B*, **58**(1), 267–288.
+- Friedman, J., Hastie, T. & Tibshirani, R. (2010). Regularization Paths for Generalized Linear Models via Coordinate Descent. *Journal of Statistical Software*, **33**(1), 1–22.
+- Friedman, J., Hastie, T., Höfling, H. & Tibshirani, R. (2007). Pathwise Coordinate Optimization. *Annals of Applied Statistics*, **2**(1), 302–332.
+- Zou, H. & Hastie, T. (2005). Regularization and Variable Selection via the Elastic Net. *JRSS-B*, **67**(2), 301–320.
+- Zou, H., Hastie, T. & Tibshirani, R. (2007). On the "degrees of freedom" of the lasso. *Annals of Statistics*, **35**(5), 2173–2192.
+- Tibshirani, R. J. (2013). The lasso problem and uniqueness. *Electronic Journal of Statistics*, **7**, 1456–1490. — base teórica da contribuição.
+- Efron, B., Hastie, T., Johnstone, I. & Tibshirani, R. (2004). Least Angle Regression. *Annals of Statistics*, **32**(2), 407–499.
+- Donoho, D. & Johnstone, I. (1994). Ideal Spatial Adaptation by Wavelet Shrinkage. *Biometrika*, **81**, 425–455.
+- Tseng, P. (2001). Convergence of a Block Coordinate Descent Method for Nondifferentiable Minimization. *JOTA*, **109**, 475–494.
+- Wu, T. T. & Lange, K. (2008). Coordinate descent algorithms for lasso penalized regression. *Annals of Applied Statistics*, **2**(1), 224–244.
+- Redmond, M. (2002). *Communities and Crime* [conjunto de dados]. UCI Machine Learning Repository. DOI 10.24432/C53W3X.
+
+---
+
+# Reprodutibilidade {-}
+
+```{r sessao, echo=TRUE}
+sessionInfo()
+```
