@@ -6,16 +6,12 @@
 #
 #  ESCOPO. Implementamos UM objeto: o caminho de regularizacao para o caso
 #  gaussiano, percorrido por descida coordenada ciclica com INICIALIZACAO
-#  QUENTE (warm start). Nao implementamos GLMs, atualizacoes por covariancia,
-#  multinomial nem resposta agrupada -- essas sao extensoes construidas SOBRE
-#  este objeto, e o recorte esta justificado no relatorio.
+#  QUENTE (warm start).
 #
 #  Problema resolvido, para cada lambda de uma grade decrescente:
 #
 #     min_{b0, b}  (1/2N) sum_i (y_i - b0 - x_i'b)^2 + lambda * P_alpha(b)
 #     P_alpha(b) = sum_j [ (1-alpha) b_j^2 / 2 + alpha |b_j| ] * pf_j
-#
-#  DEPENDENCIAS: nenhuma. So 'base' e 'stats'.
 #
 #  TRES INTERRUPTORES DE ABLACAO, usados no estudo de Monte Carlo. Eles NAO
 #  mudam a solucao, so o caminho percorrido ate ela:
@@ -25,15 +21,12 @@
 #
 #  CONTABILIDADE DE CUSTO. Alem do tempo de relogio, contamos VISITAS: o numero
 #  de vezes que uma coordenada foi avaliada. Cada visita custa O(N) e essa
-#  contagem nao depende da maquina, do sistema operacional nem da carga -- e a
-#  unidade certa para comparar algoritmos.
+#  contagem nao depende da maquina, do sistema operacional nem da carga.
 # =============================================================================
 
 
 ## Operador de soft-thresholding, S(z, g) = sinal(z) (|z| - g)_+.
-## E a solucao em forma fechada do lasso univariado; aparece na equacao (3) de
-## Tibshirani (1996) como um resultado analitico isolado para o caso
-## ortonormal, e em 2010 vira o passo elementar executado milhoes de vezes.
+## Eq. (6), p. 5
 S <- function(z, gamma) {
   sign(z) * pmax(abs(z) - gamma, 0)
 }
@@ -41,10 +34,9 @@ S <- function(z, gamma) {
 
 ## lambda_max: o menor lambda que zera TODOS os coeficientes penalizados.
 ## Acima dele o soft-thresholding zera toda coordenada, e beta = 0 e a solucao
-## exata -- e e por isso que o caminho pode partir de um ponto conhecido.
-## A versao com sufixo _pad recebe os dados ja centrados e padronizados; existe
-## para que en_path nao recalcule a padronizacao e para que nenhuma outra funcao
-## precise duplicar esta conta.
+## exata.
+## A versao com sufixo _pad recebe os dados ja centrados e padronizados
+## 	§2.5, p. 7 N*alpha*lambda_max = maxl |x_l, yi|
 .lambda_max_pad <- function(Xs, yc, alpha, pf) {
   a_ef <- max(alpha, 1e-3)                     # evita divisao por zero no ridge
   g    <- abs(as.vector(crossprod(Xs, yc))) / nrow(Xs)
@@ -64,18 +56,18 @@ lambda_max <- function(X, y, alpha = 1, pf = rep(1, ncol(X)), padronizar = TRUE)
 ## Um ciclo de descida coordenada sobre os indices em `idx`.
 ## Para cada j: coeficiente de MQ simples do residuo parcial, depois
 ## soft-thresholding, depois encolhimento proporcional (a parte l2).
-## O residuo r e atualizado em O(N) apenas quando o coeficiente muda -- e daqui
-## que vem o ganho com solucoes esparsas.
+## O residuo r e atualizado em O(N) apenas quando o coeficiente muda.
+## O nome _gauss vem do método GAUSS-SEIDEL, base para a implementação do algoritmo de IRLS (2.4 p. 7)
 ciclo_gauss <- function(X, r, beta, lambda, alpha, pf, idx, N) {
   dmax <- 0
   for (j in idx) {
     bj  <- beta[j]
-    rho <- sum(X[, j] * r) / N + bj          # <x_j, r>/N + beta_j
+    rho <- sum(X[, j] * r) / N + bj          # Eq. (7)–(8), p. 5–6
     den <- 1 + lambda * (1 - alpha) * pf[j]
-    bn  <- S(rho, lambda * alpha * pf[j]) / den
+    bn  <- S(rho, lambda * alpha * pf[j]) / den # Eq. (5), p. 5 + §2.6, p. 7
     d   <- bn - bj
     if (d != 0) {
-      r       <- r - X[, j] * d
+      r       <- r - X[, j] * d # "Many coefficients are zero... nothing needs to be changed"; ciclo completo O(pN)
       beta[j] <- bn
       if (d * d > dmax) dmax <- d * d
     }
@@ -131,7 +123,12 @@ cd_ate_convergir <- function(X, r, beta, lambda, alpha, pf, tol2, maxit,
     if (s$dmax < melhor * 0.99) { melhor <- s$dmax; sem_melhora <- 0L }
     else sem_melhora <- sem_melhora + 1L
     if (sem_melhora >= paciencia || ciclos >= maxit) break
-
+    
+    # §2.6, p. 7
+    # After a complete cycle through all the variables, we iterate
+    # on only the active set till convergence. If another complete cycle does not change the active
+    # set, we are done, otherwise the process is repeated. Active-set convergence is also mentioned
+    # in Meier et al. (2008) and Krishnapuram and Hartemink (2005).
     if (ativo) {
       A <- which(beta != 0)
       while (length(A) && ciclos < maxit) {
@@ -152,7 +149,29 @@ cd_ate_convergir <- function(X, r, beta, lambda, alpha, pf, tol2, maxit,
 ## Como em lambda_max a solucao e conhecida em forma fechada (beta = 0), o
 ## caminho parte de um ponto exato e cada solucao serve de ponto de partida
 ## para o proximo lambda. Nada e resolvido "do zero" a nao ser a primeira.
-## NOTA SOBRE O CRITERIO DE PARADA -- e a decisao mais delicada da implementacao.
+##
+## CORRESPONDENCIA COM O ARTIGO (o que aqui e reimplementacao fiel):
+##   Secao 2.5  lambda_max = max_j |<x_j, y>| / (N alpha), grade de K valores
+##              log-espacada de lambda_max a epsilon*lambda_max, warm starts
+##   Secao 2.6  centralizacao sempre, padronizacao opcional, intercepto nao
+##              penalizado, fatores de penalidade gamma_j (aqui `pf`)
+##   Secao 2.1  atualizacao do residuo so quando o coeficiente muda, O(pN)/ciclo
+##
+## O artigo cita como tipicos epsilon = 0,001 e K = 100.
+## Mantemos K = 100 mas usamos os epsilon do glmnet (0,01 quando p > N; 1e-4
+## quando N > p), que sao os que a pratica adotou.
+##
+## O QUE NAO VEM DO ARTIGO. Os argumentos `warm`, `ativo` e `ordem` existem para
+## o estudo de ablacao -- no artigo os dois primeiros estao sempre ligados e a
+## varredura e sempre ciclica. Os campos `visitas`, `ciclos` e `convergiu` do
+## retorno sao instrumentacao nossa. E, sobretudo, o criterio de parada: ver a
+## nota abaixo.
+## NOTA SOBRE O CRITERIO DE PARADA -- e a decisao mais delicada da implementacao,
+## e o artigo NAO A TOMA.
+##
+## Os autores nao revisitam as propriedades de convergencia da
+## descida coordenada em problemas convexos, remetendo a Tseng (2001).
+## Nao ha criterio de parada.
 ##
 ## Paramos quando um ciclo completo muda todo coeficiente por menos que `tol`.
 ## Duas armadilhas, ambas encontradas na pratica ao rodar este trabalho:
@@ -211,7 +230,7 @@ en_path <- function(X, y, alpha = 1, lambda = NULL, nlambda = 100L,
   ## --- grade de lambda ------------------------------------------------------
   if (is.null(lambda)) {
     lmax   <- .lambda_max_pad(Xs, yc, alpha, pf)
-    lambda <- exp(seq(log(lmax), log(lmax * lambda_min_ratio), length.out = nlambda))
+    lambda <- exp(seq(log(lmax), log(lmax * lambda_min_ratio), length.out = nlambda)) #§2.5, p. 7
   } else {
     lambda <- sort(as.numeric(lambda), decreasing = TRUE)
   }
@@ -223,7 +242,7 @@ en_path <- function(X, y, alpha = 1, lambda = NULL, nlambda = 100L,
   beta <- numeric(p); r <- yc
 
   for (k in seq_len(nl)) {
-    if (!warm) { beta <- numeric(p); r <- yc }   # ABLACAO: partida fria
+    if (!warm) { beta <- numeric(p); r <- yc }   # §2.5, p. 7
     ## o criterio compara (delta beta)^2, entao o limiar entra ao quadrado
     tol2 <- if (escala_tol == "lambda") (tol * lambda[k])^2 else tol^2
     f <- cd_ate_convergir(Xs, r, beta, lambda[k], alpha, pf,
@@ -235,7 +254,7 @@ en_path <- function(X, y, alpha = 1, lambda = NULL, nlambda = 100L,
 
   ## --- volta a escala original ---------------------------------------------
   Bo <- B / sdn
-  a0 <- as.vector(ybar - crossprod(Bo, mu))
+  a0 <- as.vector(ybar - crossprod(Bo, mu)) #§2.6, p. 7	β̂₀ = ȳ na parametrização centrada
 
   structure(list(
     lambda = lambda, beta = Bo, a0 = a0, df = colSums(B != 0),
@@ -253,7 +272,10 @@ predict.enpath <- function(object, newx, ...) {
 
 
 ## AUDITORIA DE OTIMALIDADE (condicoes KKT).
-##
+## https://en.wikipedia.org/wiki/Karush–Kuhn–Tucker_conditions
+## Verifica se ​​beta_hat satisfaz as condições de ótimo do problema.
+## Para problemas convexos, as condições KKT caracterizam o ótimo global.
+## 
 ## Com g_j = (1/N) <x_j, y - X beta> na escala padronizada, o otimo satisfaz
 ##    beta_j != 0 :  g_j = lambda alpha pf_j sinal(beta_j) + lambda(1-alpha) pf_j beta_j
 ##    beta_j == 0 :  |g_j| <= lambda alpha pf_j
@@ -284,11 +306,10 @@ viol_kkt <- function(fit, relativa = FALSE) {
 
 
 ## Valor do objetivo penalizado (escala padronizada) em todo o caminho.
-##
+## 	Eq. (1)–(3), p. 3
 ## Esta e a quantidade certa para comparar duas execucoes do algoritmo. Comparar
 ## os vetores beta pode enganar: quando a solucao nao e unica -- ou quase nao e --
-## dois pontos distintos podem ter o MESMO valor do objetivo. Diferenca em beta
-## grande com diferenca em objetivo nula significa degenerescencia, nao erro.
+## dois pontos distintos podem ter o MESMO valor do objetivo.
 objetivo_caminho <- function(fit) {
   Xs <- sweep(sweep(fit$X, 2, fit$centro, "-"), 2, fit$escala, "/")
   yc <- fit$y - mean(fit$y)

@@ -157,7 +157,7 @@ multinomial, resposta agrupada e tratamento de matrizes esparsas. Este trabalho
 implementa um deles:
 
 > **O *regularization path* percorrido por *coordinate descent* cíclico com
-> *warm starts*** — a função `en_path()`, no caso gaussiano.
+> *warm starts*** — a função `en_path()`.
 
 Os demais são descritos no texto e apontados como extensões, mas não
 implementados. Três razões sustentam a escolha.
@@ -602,19 +602,25 @@ ggplot(rot$traj, aes(passo, gap, linetype = rota)) +
   labs(x = "iteração (custo comparável em ambas as rotas)",
        y = "distância ao ótimo (escala log)", linetype = NULL,
        title = "Duas rotas para o mesmo problema",
-       caption = "O ridge iterado estabiliza ACIMA do ótimo: variáveis descartadas pelo limiar não podem voltar.")
+       caption = "O ridge iterado estabiliza ACIMA do ótimo: variáveis descartadas pelo limiar não podem voltar. O eixo tem piso em 1e-16 — a curva do coordinate descent encosta nele, o que significa precisão de máquina, não um valor medido.")
 ```
 
 ```{r tab-rotas}
-s <- rot$sensibilidade
-n_eps_grande <- s$nao_nulos[1]; n_eps_pequeno <- s$nao_nulos[4]
+sr   <- rot$sensibilidade
+i_cd <- which(is.na(sr$eps))
 n_ref <- rot$nao_nulos_ref
-s$eps <- ifelse(is.na(s$eps), "coordinate descent", format(s$eps, scientific = TRUE))
-names(s) <- c("limiar eps", "coef. não nulos", "distância ao ótimo",
-              "objetivo", "excesso sobre o ótimo")
-tab(s, digits = 5,
-    caption = sprintf("Mesmos dados, mesmo lambda. O ótimo de referência vem de um ajuste independente com tolerância 1e-12, e tem %d coeficientes não nulos.",
-                      n_ref))
+
+esc <- function(x) formatC(x, format = "e", digits = 2)
+tab(data.frame(
+  `limiar eps` = ifelse(is.na(sr$eps), "coordinate descent",
+                        formatC(sr$eps, format = "e", digits = 0)),
+  `coef. não nulos` = sr$nao_nulos,
+  `distância ao ótimo` = esc(sr$dist_ao_otimo),
+  `objetivo` = formatC(sr$objetivo, format = "f", digits = 8),
+  `excesso sobre o ótimo` = esc(sr$excesso),
+  check.names = FALSE),
+  caption = sprintf("Mesmos dados, mesmo lambda. O ótimo de referência vem de um ajuste independente com tolerância 1e-12, e tem %d coeficientes não nulos.",
+                    n_ref))
 ```
 
 ::: {.intuicao}
@@ -625,30 +631,32 @@ linha — se fosse, o "ótimo" não seria ótimo. O código verifica isso com um
 tabela.
 
 Três outras leituras que a tabela permite conferir sozinha: o número de não
-nulos deve crescer quando o limiar diminui; o *coordinate descent* deve estar
-na linha de menor excesso; e a distância ao ótimo **não** vai a zero quando
-$\epsilon\to0$. Esta última é a mais interessante e eu havia subestimado: com
-limiar minúsculo o ridge iterado guarda variáveis extras com coeficientes
-pequenos mas não desprezíveis, e para num ponto vizinho do ótimo — não nele.
+nulos deve crescer quando o limiar diminui; o *coordinate descent* deve estar na
+linha de menor excesso; e a distância ao ótimo **não** vai a zero quando
+$\epsilon\to0$ — ela estabiliza num patamar, porque as variáveis descartadas
+cedo não têm como voltar.
 :::
 
-::: {.achado}
-**O defeito não é de eficiência, é de estrutura.**
+```{r rotas-leitura, results='asis'}
+tam_ri  <- sort(unique(sr$nao_nulos[-i_cd]))
+acerta  <- sr$nao_nulos[i_cd] %in% tam_ri
+d_pior  <- max(sr$dist_ao_otimo[-i_cd])
+d_melhor<- min(sr$dist_ao_otimo[-i_cd])
+d_cd    <- sr$dist_ao_otimo[i_cd]
+ordens  <- floor(log10(d_melhor / max(d_cd, 1e-300)))
 
-1. **Nenhum zero exato nasce do algoritmo.** Como $1/|\beta_j|$ explode quando
-   $\beta_j\to0$, é preciso um limiar `eps` arbitrário. A tabela mostra o modelo
-   indo de `r n_eps_grande` a `r n_eps_pequeno` variáveis conforme o limiar, nos
-   mesmos dados e no mesmo $\lambda$ — os zeros são uma decisão do usuário, não um
-   resultado da otimização.
-2. **O descarte é irreversível.** Zerada, a variável sai da matriz de pesos e não
-   volta. Num caminho isso é fatal: variáveis precisam poder reentrar quando
-   $\lambda$ diminui.
-3. **Custo $O(m^3)$ por iteração**, com $m$ o número de variáveis ativas, por causa do sistema linear.
+nunca <- if (acerta) "" else sprintf(
+  " E não se trata de calibrar melhor: a solução do lasso tem %d coeficientes não nulos, e os limiares testados dão %s. **O tamanho certo nunca aparece.**",
+  sr$nao_nulos[i_cd], paste(tam_ri, collapse = ", "))
 
-O *coordinate descent* não tem nenhum dos três porque o *soft-thresholding*
-produz zeros **exatos** como resultado da otimização, e um zero exato pode voltar
-a ser não nulo no ciclo seguinte.
-:::
+cat(sprintf(
+"\n::: {.achado}\n**O defeito não é de eficiência, é de estrutura.**\n\n1. **Nenhum zero exato nasce do algoritmo.** Como $1/|\\beta_j|$ explode quando $\\beta_j \\to 0$, é preciso um limiar `eps` arbitrário, e o modelo vai de %d a %d variáveis conforme o valor escolhido — nos mesmos dados e no mesmo $\\lambda$. Os zeros são decisão do usuário, não resultado da otimização.%s\n\n2. **O descarte é irreversível.** Zerada, a variável sai da matriz de pesos e não volta. Num caminho isso é fatal: variáveis precisam poder reentrar quando $\\lambda$ diminui.\n\n3. **Custo $O(m^3)$ por iteração**, com $m$ o número de variáveis ativas, por causa do sistema linear.\n\nO *coordinate descent* não tem nenhum dos três porque o *soft-thresholding* produz zeros **exatos** como resultado da otimização, e um zero exato pode voltar a ser não nulo no ciclo seguinte.\n:::\n\n",
+min(tam_ri), max(tam_ri), nunca))
+
+cat(sprintf(
+"::: {.intuicao}\n**O que a referência independente revelou.** O ótimo desta figura e desta tabela não vem do *coordinate descent* — vem de um ajuste separado com tolerância $10^{-12}$. Sem esse cuidado, a rota de 2010 serviria de régua para si mesma, e a comparação não valeria nada.\n\nCom a régua externa o contraste fica quantificado. Na **melhor** escolha de limiar o ridge iterado para a %s do ótimo em norma do máximo, e na pior a %s; o *coordinate descent* chega a %s. São cerca de %d ordens de grandeza de diferença.\n:::\n\n",
+fmt(d_melhor), fmt(d_pior), fmt(d_cd), ordens))
+```
 
 ---
 
@@ -1021,7 +1029,7 @@ remedio <- if (length(al_ok)) {
 } else ""
 
 cat(sprintf(
-"\n::: {.achado}\n**O resultado contrariou a expectativa inicial — e isso é o achado.** A primeira versão deste experimento usava apenas correlação intragrupo 0,99 e encontrou Jaccard próximo de 1: praticamente nenhuma instabilidade. Aqui, com alpha = 1, o Jaccard médio é %.3f sob correlação 0,99 e %.3f sob colunas exatamente idênticas.\n\nA explicação é teórica e está em R. J. Tibshirani (2013): com preditores de distribuição contínua, colunas distintas produzem solução de lasso **única com probabilidade 1**. Correlação alta não gera degenerescência; **dependência exata** gera.\n\nIsso não é curiosidade. Dependência exata é comum em dados aplicados — indicadoras redundantes, variáveis derivadas de outras, totais que são soma de partes, e todo caso com p > N — e é justamente onde ninguém procura, porque a saída do algoritmo parece perfeitamente determinada.\n\n%s:::\n",
+"\n::: {.achado}\n**O resultado contrariou a expectativa inicial — e isso é o achado.** A primeira versão deste experimento usava apenas correlação intragrupo 0,99 e encontrou Jaccard próximo de 1: praticamente nenhuma instabilidade. Aqui, com alpha = 1, o Jaccard médio é %.3f sob correlação 0,99 e %.3f sob colunas exatamente idênticas.\n\nA explicação é teórica e está em R. J. Tibshirani (2013): com preditores de distribuição contínua, colunas distintas produzem solução de lasso **única com probabilidade 1**. Correlação alta não gera degenerescência; **dependência exata** gera.\n\nIsso não é curiosidade. Dependência exata é comum em dados aplicados — indicadoras redundantes, variáveis derivadas de outras, totais que são soma de partes, e todo caso com p > N — e é justamente onde ninguém procura, porque a saída do algoritmo parece perfeitamente determinada.\n\n%s\n:::\n",
 j_099, j_100, remedio))
 ```
 
