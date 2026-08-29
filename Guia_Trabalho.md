@@ -118,8 +118,7 @@ agrupada (4.2).
 ### 4.1. O que é implementação do artigo de 2010
 
 | Seção do HTML | Artigo de 2010 | O que faz |
-|:--|:--|:--|
-| **O algoritmo** (caixa com o pseudocódigo) | 2.1 + 2.5 + 2.6 reunidas | Enuncia o método completo num lugar só |
+| :-- | :-- | :-- || **O algoritmo** (caixa com o pseudocódigo) | 2.1 + 2.5 + 2.6 reunidas | Enuncia o método completo num lugar só |
 | **A implementação → O passo elementar** | **2.1 Naive updates** | O operador de *soft-thresholding* e a atualização coordenada |
 | **A implementação → Um ciclo** | **2.1 Naive updates** | Uma varredura de $j=1,\dots,p$, com atualização do resíduo em $O(N)$ só quando o coeficiente muda |
 | **A implementação → Convergência para um λ** | **2.6 Other details** | A estratégia de *active set* |
@@ -143,7 +142,7 @@ não imprimi-la no relatório.
 ### 4.3. O que é do artigo de 1996
 
 | Seção do HTML | Artigo de 1996 | O que faz |
-|:--|:--|:--|
+| :-- | :-- | :-- |
 | **1996 → 2010: O lasso como Tibshirani o definiu** | Definição do lasso na forma **restrita**, $\sum_j\lvert\beta_j\rvert\le t$ | O ponto de partida |
 | **Validação → caso ortonormal** | ⚠️ eq. (3), caso de desenho ortonormal | A fórmula fechada que nosso `S` deve reproduzir à precisão de máquina |
 | **O contraste com 1996, medido** | ⚠️ Seção 4, algoritmos; a aproximação por ridge iterado | A rota de 1996 implementada, para contraste medido e não afirmado |
@@ -158,7 +157,7 @@ não imprimi-la no relatório.
 Esta é a fronteira que a banca testa. Tenha na ponta da língua:
 
 | No HTML | De onde vem |
-|:--|:--|
+| :-- | :-- |
 | **A auditoria de otimalidade** (`viol_kkt`) | Nossa. Baseada nas condições de otimalidade padrão de otimização convexa. O artigo de 2010 **não** propõe verificação de KKT — quem faz isso é o artigo das *strong rules*, de 2012 |
 | **A geometria do problema** (superfícies 3D, corte 1D, zigue-zague, *warm start*) | Nossas. **Mas** a trajetória desenhada é *coordinate descent* de verdade, a mesma atualização da Seção 2.1 rodando com $p=2$ — não é esquema ilustrativo |
 | **AIC, BIC e GCV** no Monte Carlo II | Não estão em 2010. O GCV vem de 1996; AIC e BIC, da literatura geral |
@@ -191,7 +190,7 @@ muda tudo.**
 
 A cadeia inteira sai daí:
 
-```
+```text
 separável → forma fechada por coordenada → ciclo barato → caminho barato → warm start
 ```
 
@@ -457,19 +456,47 @@ ponto dessa face, escolhido por quem foi visitado primeiro.
 Quando as colunas são apenas **muito correlacionadas**, mas distintas, a solução
 é única com probabilidade 1 (R. J. Tibshirani, 2013).
 
+**O desenho, em uma frase, para quando perguntarem como foi medido.** $N=100$,
+$p=30$ — três grupos de cinco colunas correlacionadas mais quinze de ruído.
+Cruzamento de $\rho_g\in\{0{,}90;\,0{,}99;\,1\}$ contra
+$\alpha\in\{1;\,0{,}95;\,0{,}80;\,0{,}50\}$, com $\rho_g=1$ significando colunas
+idênticas. Para cada célula, o caminho é reajustado $B$ vezes com ordens de
+visita sorteadas e comparado num único $\lambda=0{,}05\,\lambda_{\max}$. **Os
+dados, o $\lambda$ e o $\alpha$ são sempre os mesmos; só a ordem muda.**
+
 > **O achado, e ele contrariou a expectativa inicial.** A primeira versão do
-> experimento usava correlação intragrupo 0,99 e encontrou estabilidade
-> praticamente perfeita. Só com colunas **idênticas** o fenômeno aparece.
+> experimento usava correlação intragrupo 0,99 e encontrou Jaccard **igual a 1**:
+> nenhuma instabilidade. Só com colunas **idênticas** o fenômeno aparece.
 > **Correlação alta não gera degenerescência; dependência exata gera.**
+
+**Não pare no Jaccard — e este é o ponto que a banca pode cobrar.** Conjunto que
+varia sob reordenação é compatível com **duas** explicações: degenerescência
+verdadeira ou tolerância frouxa (Seção 7.3). O que separa uma da outra é a
+**amplitude do objetivo**, e na simulação ela é nula. Conjuntos diferentes com o
+mesmo valor da função objetivo é a assinatura de não unicidade. Se fosse
+tolerância, o objetivo variaria junto.
+
+Se você tiver só uma frase para a contribuição, use esta: *os reajustes chegam a
+listas diferentes de variáveis com exatamente o mesmo valor do objetivo.*
 
 Isso não é curiosidade acadêmica. Dependência exata é comum em dados aplicados —
 indicadoras redundantes, variáveis derivadas de outras, totais que são soma de
 partes, e **todo** caso com $p>N$ — e é justamente onde ninguém procura, porque a
 saída do algoritmo parece perfeitamente determinada.
 
-**E o remédio é quase de graça:** $\alpha$ pouco abaixo de 1 já restaura a
-unicidade com custo desprezível em predição. Não é preciso abandonar a parcimônia
-do lasso: basta não estar **exatamente** em $\alpha=1$.
+**E o remédio é barato, com um detalhe que vale citar.** Sob dependência exata,
+$\alpha=0{,}95$ já devolve Jaccard 1, e o erro de predição sobe pouco. Sob
+correlação 0,99, o mesmo $\alpha=0{,}95$ **reduz** o erro em relação ao lasso. O
+custo do remédio muda de sinal conforme o cenário, e no cenário mais comum na
+prática ele é negativo. Não é preciso abandonar a parcimônia do lasso: basta não
+estar **exatamente** em $\alpha=1$.
+
+**Duas ressalvas que você mesmo deve levantar.** A grade salta de $\rho_g=0{,}99$
+para 1 e de $\alpha=0{,}95$ para 1: sabemos que há descontinuidade em cada
+intervalo, não onde está. E **seleção estável não é seleção correta** — a
+recuperação do grupo verdadeiro é pior em $\rho_g=0{,}99$, onde o Jaccard é 1, do
+que sob dependência exata. Em 0,99 o algoritmo elege uma variável de forma
+perfeitamente reprodutível, inclusive quando elege a errada.
 
 ### 7.3. O segundo mecanismo, que se confunde com o primeiro
 
@@ -480,12 +507,20 @@ entre zero e não zero** conforme a ordem de visita.
 > Para quem lê a saída, isso é **indistinguível** de degenerescência verdadeira —
 > e o remédio é o oposto: apertar a tolerância, não trocar de estimador.
 
+**Ordem de exposição, se for apresentar.** A tabela de decisão abaixo já foi
+usada na Seção 7.2, mesmo aparecendo formalmente aqui. Vale antecipá-la no slide:
+mostre os dois sinais **antes** de mostrar a simulação, e a conclusão de 7.2
+deixa de parecer um salto. O trabalho aplica o mesmo par de sinais duas vezes e
+chega a conclusões **opostas** — degenerescência na simulação, tolerância nos
+dados reais. Esse contraste é o argumento mais forte de que o diagnóstico
+discrimina de fato, em vez de sempre dizer a mesma coisa.
+
 ### 7.4. A proposta
 
 Reajustar $B$ vezes com ordens de visita sorteadas e olhar **duas** coisas:
 
 | Conjunto selecionado | Valor do objetivo | Diagnóstico |
-|:--|:--|:--|
+| :-- | :-- | :-- |
 | varia | constante | **não unicidade verdadeira** — os pontos são igualmente ótimos |
 | varia | varia | **convergência incompleta** — aperte a tolerância antes de concluir |
 | constante | constante | seleção estável |
@@ -584,8 +619,14 @@ são **numéricos** (mudam com semente e delineamento).
 - Fator de encarecimento com a correlação.
 - Jaccard sob reordenação: **1,000** para correlação 0,90 e 0,99; **abaixo de 1**
   só com colunas idênticas.
-- Amplitude do objetivo entre reordenações: **zero** no caso degenerado — é o que
-  prova que é não unicidade e não erro numérico.
+- Amplitude do objetivo entre reordenações: **nula** no caso degenerado — é o que
+  prova que é não unicidade e não erro numérico. Sem este número, o Jaccard
+  sozinho não conclui nada.
+- Nº médio de variáveis **intercambiáveis** no caso degenerado (entram em algumas
+  ordens de visita e não em outras).
+- Erro contra $E(y\mid x)$ em $\alpha=1$ **contra** $\alpha=0{,}95$, nos dois
+  cenários: sob dependência exata o remédio custa um pouco, sob correlação 0,99
+  ele **melhora** o erro.
 - Na aplicação: número de intercambiáveis com critério solto **contra** critério
   apertado. **Este é o par de números mais importante do trabalho.**
 
@@ -597,7 +638,7 @@ O princípio: em vez de olhar a tabela renderizada, confira as **propriedades qu
 precisam valer**.
 
 | Saída | Invariantes que precisam valer |
-|:--|:--|
+| :-- | :-- |
 | Validação, caso ortonormal | Discrepância exatamente **zero** — é fórmula fechada |
 | Validação, KKT | Violação relativa da ordem de `tol`. Um erro de implementação daria ordem 1 |
 | Contraste com 1996 | Nenhuma linha do ridge iterado com objetivo **abaixo** do ótimo de referência; nº de não nulos **cresce** quando o limiar diminui; distância ao ótimo **não** vai a zero quando $\epsilon\to0$ |
@@ -605,7 +646,8 @@ precisam valer**.
 | Ablação, custo | *Warm start* dominante; ganhos **sub**-multiplicativos |
 | EC2 | TPR **não** presa em 1 (senão o desenho é fácil demais); proporção no limite da grade baixa |
 | Cópias exatas | Soma estável entre ordens; divisão instável com $\alpha=1$; **igual** com $\alpha<1$ |
-| Contribuição | Jaccard = 1 para correlação < 1; < 1 só com dependência exata; amplitude do objetivo = 0 no caso degenerado |
+| Contribuição | Jaccard = 1 para correlação < 1; < 1 só com dependência exata; amplitude do objetivo ≈ 0 **em todas as células** — se alguma célula tiver amplitude apreciável, o diagnóstico ali é convergência incompleta e a leitura muda |
+| Contribuição, remédio | Jaccard volta a 1 em $\alpha<1$; a soma dos coeficientes do grupo é estável entre ordens mesmo quando a divisão não é |
 | Aplicação | Intercambiáveis **caem** ao apertar a tolerância; amplitude do objetivo vai a zero |
 | Qualquer experimento | O tempo por experimento impresso no fim do `99_roda_tudo.R` diz onde o custo está |
 
@@ -644,6 +686,27 @@ que o fenômeno exige dependência **exata** e não correlação alta, e transfo
 isso num diagnóstico que separa degenerescência de erro numérico — coisa que o
 *bootstrap* não faz.
 
+**"Como você sabe que a instabilidade da simulação não era só tolerância
+frouxa?"**
+Porque a **amplitude do objetivo** era nula. Conjuntos diferentes com o mesmo
+valor da função objetivo só acontece se os pontos forem igualmente ótimos. Se
+fosse tolerância, os reajustes teriam parado em valores diferentes do objetivo —
+foi exatamente isso que encontramos nos dados reais, e lá a conclusão foi a
+oposta. O mesmo instrumento, duas respostas.
+
+**"Por que a grade pula de 0,99 direto para 1?"**
+Porque o desenho foi feito para contrastar dependência exata com correlação alta,
+não para localizar a transição. A consequência é que sabemos que existe uma
+descontinuidade entre 0,99 e 1, e não onde ela está. Acrescentar $\rho_g=0{,}999$
+responderia, e é trabalho de uma execução.
+
+**"Jaccard 1 quer dizer que a seleção está certa?"**
+Não, e os próprios dados mostram isso. Em $\rho_g=0{,}99$ o Jaccard é 1 e a
+recuperação do grupo verdadeiro é a **pior** das três condições. Estabilidade
+significa que a lista não depende da ordem de visita; a lista pode ser
+reprodutivelmente errada. São perguntas diferentes e o diagnóstico responde só a
+primeira.
+
 **"Por que a auditoria KKT não é circular?"**
 Porque o critério de parada é sobre **mudança de coeficiente**, e a auditoria é
 sobre **gradiente**. São quantidades diferentes. Se usássemos KKT como critério de
@@ -677,6 +740,15 @@ Diga você antes que perguntem:
   caminho. Registrado no objeto e reportado.
 - **O diagnóstico detecta a não unicidade, mas não a resolve.** O remédio testado
   ($\alpha<1$) muda o estimador.
+- **A grade do experimento de seleção salta de $\rho_g=0{,}99$ para 1 e de
+  $\alpha=0{,}95$ para 1.** Há uma descontinuidade em cada intervalo e não
+  sabemos onde. Custo de fechar: uma execução.
+- **No mesmo experimento, a semente depende de $\rho_g$**, então cada valor de
+  correlação usa dados distintos. Comparar linhas de $\rho_g$ mistura
+  delineamento com ruído amostral; comparar $\alpha$ dentro de uma linha, não.
+- **Estabilidade não é correção.** O diagnóstico responde se a lista depende da
+  ordem de visita, não se a lista está certa — e há uma célula em que ela é
+  estável e errada.
 - **A constante `tol` continua arbitrária.** Um critério que devolvesse um
   certificado explícito — parar quando a violação KKT relativa cai abaixo de um
   limiar — seria mais honesto, ao custo de tornar a auditoria parte do algoritmo
@@ -691,7 +763,7 @@ Diga você antes que perguntem:
 Termos mantidos em inglês no relatório, por serem os nomes originais:
 
 | Termo | O que é |
-|:--|:--|
+| :-- | :-- |
 | *coordinate descent* | Otimizar uma coordenada por vez, com as outras fixas |
 | *regularization path* | A sequência de soluções para uma grade decrescente de $\lambda$ |
 | *warm start* | Iniciar cada problema na solução do $\lambda$ anterior |
@@ -712,7 +784,7 @@ Termos mantidos em inglês no relatório, por serem os nomes originais:
 Os oito itens exigidos, com peso sugerido. Total de referência: 20 minutos.
 
 | Tempo | Item | O que mostrar | A frase que fica |
-|--:|:--|:--|:--|
+| --: | :-- | :-- | :-- |
 | 1 min | **a) Título** | Artigo, recorte | "Um componente, levado até o fim" |
 | 3 min | **b) Introdução** | 1996 e seus três gargalos; o que mudou desde 2010 | "1996 entregou um estimador; 2010 entregou um algoritmo" |
 | 1 min | **b′) O recorte** | As três razões | "É a peça que os autores de fato reivindicam" |
@@ -720,7 +792,7 @@ Os oito itens exigidos, com peso sugerido. Total de referência: 20 minutos.
 | 1 min | **c′) Validação** | Ortonormal + KKT | "Validamos contra teoria, não contra outro software" |
 | 4 min | **d) Monte Carlo** | Ablação (a interação!) e os cinco critérios | "O *active set* sozinho pode ser prejuízo" |
 | 2 min | **e) Aplicação** | Colinearidade, caminho, CV | "O ganho aqui é interpretativo, não preditivo" |
-| 3 min | **f) Contribuição** | Cópias exatas, perfil do vale, os dois critérios de parada | "Reordenar expõe o sintoma; o objetivo diz a doença" |
+| 3 min | **f) Contribuição** | Cópias exatas, perfil do vale, a tabela dos dois sinais, os dois critérios de parada | "Reordenar expõe o sintoma; o objetivo diz a doença" |
 | 0,5 min | **g) Uso de IA** | A declaração, com os erros reais | "A IA não executou nada; os números são meus" |
 | 1 min | **h) Impacto** | A recomendação prática | "Publique a frequência de seleção sob reordenação" |
 
@@ -732,3 +804,8 @@ Monte Carlo II.
 números do diagnóstico com as duas tolerâncias. São eles que sustentam,
 respectivamente, o entendimento do método, a contribuição, e a honestidade do
 trabalho.
+
+**E nunca mostre o Jaccard sem a amplitude do objetivo ao lado.** Sozinho, o
+Jaccard é ambíguo entre degenerescência e tolerância frouxa — é o par que
+conclui, e é o par que a banca vai cobrar. Se o slide couber só um número, que
+seja: *listas diferentes, mesmo objetivo.*
