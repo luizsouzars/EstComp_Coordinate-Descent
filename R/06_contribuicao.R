@@ -70,15 +70,19 @@
 diagnostico_ordem <- function(X, y, alpha = 1, lambda_alvo = NULL, B = 20L,
                               nlambda = 20L, limiar_rel = 1e-6, semente = 1L,
                               nomes = NULL, ...) {
-  X <- as.matrix(X); p <- ncol(X)
+  X <- as.matrix(X)
+  p <- ncol(X)
   if (is.null(nomes)) nomes <- colnames(X)
   if (is.null(nomes)) nomes <- paste0("V", seq_len(p))
 
   lmax <- lambda_max(X, y, alpha = alpha)
-  alvo <- if (is.null(lambda_alvo)) 0.05 * lmax
-          else min(lambda_alvo, 0.98 * lmax)
-  lam  <- exp(seq(log(lmax), log(alvo), length.out = nlambda))
-  k    <- nlambda                       # o alvo e, por construcao, o ultimo ponto
+  alvo <- if (is.null(lambda_alvo)) {
+    0.05 * lmax
+  } else {
+    min(lambda_alvo, 0.98 * lmax)
+  }
+  lam <- exp(seq(log(lmax), log(alvo), length.out = nlambda))
+  k <- nlambda # o alvo e, por construcao, o ultimo ponto
 
   ## caminho de referencia (ordem ciclica), na mesma grade
   ref <- en_path(X, y, alpha = alpha, lambda = lam, ...)
@@ -91,34 +95,36 @@ diagnostico_ordem <- function(X, y, alpha = 1, lambda_alvo = NULL, B = 20L,
   set.seed(semente)
   conj_exato <- conj_limiar <- vector("list", B)
   coefs <- matrix(0, p, B)
-  objs  <- numeric(B)
+  objs <- numeric(B)
   for (b in seq_len(B)) {
-    ord <- sample.int(p)                       # uma ordem fixa por reajuste
-    f   <- en_path(X, y, alpha = alpha, lambda = lam, ordem = ord, ...)
-    bb  <- f$beta[, k]
-    coefs[, b]      <- bb
+    ord <- sample.int(p) # uma ordem fixa por reajuste
+    f <- en_path(X, y, alpha = alpha, lambda = lam, ordem = ord, ...)
+    bb <- f$beta[, k]
+    coefs[, b] <- bb
     conj_exato[[b]] <- which(bb != 0)
-    conj_limiar[[b]]<- selecionadas(bb)
-    objs[b]         <- objetivo_caminho(f)[k]
+    conj_limiar[[b]] <- selecionadas(bb)
+    objs[b] <- objetivo_caminho(f)[k]
   }
 
   freq <- rowMeans(apply(coefs, 2, function(b) {
-    z <- numeric(p); z[selecionadas(b)] <- 1; z
+    z <- numeric(p)
+    z[selecionadas(b)] <- 1
+    z
   }))
   amp_obj <- (max(objs) - min(objs)) / max(abs(mean(objs)), 1e-12)
 
   list(
-    lambda          = lam[k],
-    alpha           = alpha,
-    freq            = stats::setNames(freq, nomes),
-    jaccard_exato   = estabilidade(conj_exato),
-    jaccard_limiar  = estabilidade(conj_limiar),
-    amplitude_obj   = amp_obj,          # o discriminante entre os dois mecanismos
-    tamanho_medio   = mean(vapply(conj_limiar, length, numeric(1))),
-    sempre          = sum(freq == 1),
-    nunca           = sum(freq == 0),
+    lambda = lam[k],
+    alpha = alpha,
+    freq = stats::setNames(freq, nomes),
+    jaccard_exato = estabilidade(conj_exato),
+    jaccard_limiar = estabilidade(conj_limiar),
+    amplitude_obj = amp_obj, # o discriminante entre os dois mecanismos
+    tamanho_medio = mean(vapply(conj_limiar, length, numeric(1))),
+    sempre = sum(freq == 1),
+    nunca = sum(freq == 0),
     intercambiaveis = sum(freq > 0 & freq < 1),
-    dp_coef         = stats::setNames(apply(coefs, 1, stats::sd), nomes),
+    dp_coef = stats::setNames(apply(coefs, 1, stats::sd), nomes),
     coefs = coefs, objs = objs, conjuntos = conj_limiar, ref = ref, k = k
   )
 }
@@ -128,29 +134,59 @@ diagnostico_ordem <- function(X, y, alpha = 1, lambda_alvo = NULL, B = 20L,
 # (i) A ordem afeta a VELOCIDADE?
 # ---------------------------------------------------------------------------
 ## <<ordem_velocidade
-experimento_ordem_velocidade <- function(R = 5L, rhos = c(0, 0.9, 0.99),
+## A pergunta e se ALEATORIZAR a ordem de varredura compensa, e a resposta
+## depende de rho -- entao a grade de rho precisa ser fina o bastante para
+## mostrar ONDE o efeito aparece e onde ele se apaga. Com tres pontos so se ve
+## que o sinal muda; com oito se ve a forma da curva.
+##
+## PAREAMENTO EM DOIS NIVEIS, e e dele que vem toda a precisao deste experimento:
+##   (i) dentro de uma replica, as duas ordens rodam sobre os MESMOS dados e a
+##       MESMA grade de lambda. A razao aleatoria/ciclica existe POR REPLICA --
+##       calcule-a assim, nunca dividindo as medias, que e o que descarta o
+##       pareamento e deixa a razao sem erro-padrao.
+##  (ii) a semente depende so da replica, NAO de rho: para um mesmo r, todos os
+##       valores de rho partem do mesmo sorteio de base e diferem apenas na
+##       estrutura de correlacao. Isso torna a CURVA em rho pareada tambem, e
+##       elimina a chance de colisao de sementes que a formula antiga tinha ao
+##       adensar a grade.
+##
+## `obj` e `convergiu` sao instrumentacao de auditoria: sem eles, comparar
+## visitas entre um ajuste convergido e outro que estourou maxit nao mede nada.
+## O mesmo cuidado que o EC1 ja exige das quatro configuracoes.
+experimento_ordem_velocidade <- function(R = 5L,
+                                         rhos = c(
+                                           0, 0.3, 0.5, 0.7,
+                                           0.8, 0.9, 0.95, 0.99
+                                         ),
                                          N = 100L, p = 200L, nlambda = 30L,
                                          semente = 8100) {
-  linhas <- list(); z <- 0L
-  n_total <- length(rhos) * R; feitos <- 0L
-  for (rho in rhos) for (r in seq_len(R)) {
-    feitos <- feitos + 1L; progresso(feitos, n_total, "velocidade")
-    set.seed(semente + 31 * r + round(1000 * rho))
-    d <- gera_equicor(N, p, rho)
+  linhas <- list()
+  z <- 0L
+  n_total <- length(rhos) * R
+  feitos <- 0L
+  for (rho in rhos) {
+    for (r in seq_len(R)) {
+      feitos <- feitos + 1L
+      progresso(feitos, n_total, "velocidade")
+      set.seed(semente + r) # ver (ii) acima
+      d <- gera_equicor(N, p, rho)
 
-    ## grade fixa: as duas ordens resolvem exatamente os mesmos problemas
-    lam <- en_path(d$X, d$y, alpha = 1, nlambda = nlambda)$lambda
+      ## grade fixa: as duas ordens resolvem exatamente os mesmos problemas
+      lam <- en_path(d$X, d$y, alpha = 1, nlambda = nlambda)$lambda
 
-    for (ord in c("ciclica", "aleatoria")) {
-      t0 <- Sys.time()
-      f  <- en_path(d$X, d$y, alpha = 1, lambda = lam, ordem = ord)
-      z <- z + 1L
-      linhas[[z]] <- data.frame(
-        rho = rho, rep = r, ordem = ord,
-        visitas = sum(f$visitas), ciclos = sum(f$ciclos),
-        tempo = as.numeric(difftime(Sys.time(), t0, units = "secs")),
-        kkt = max(viol_kkt(f))
-      )
+      for (ord in c("ciclica", "aleatoria")) {
+        t0 <- Sys.time()
+        f <- en_path(d$X, d$y, alpha = 1, lambda = lam, ordem = ord)
+        z <- z + 1L
+        linhas[[z]] <- data.frame(
+          rho = rho, rep = r, ordem = ord,
+          visitas = sum(f$visitas), ciclos = sum(f$ciclos),
+          tempo = as.numeric(difftime(Sys.time(), t0, units = "secs")),
+          kkt = max(viol_kkt(f, relativa = TRUE)),
+          obj = sum(objetivo_caminho(f)),
+          convergiu = all(f$convergiu)
+        )
+      }
     }
   }
   do.call(rbind, linhas)
@@ -169,32 +205,39 @@ experimento_ordem_velocidade <- function(R = 5L, rhos = c(0, 0.9, 0.99),
 experimento_ordem_selecao <- function(R = 10L, alphas = c(1, 0.95, 0.8, 0.5),
                                       rho_gs = c(0.9, 0.99, 1), N = 100L,
                                       B = 15L, n_teste = 2000L, semente = 5150) {
-  linhas <- list(); z <- 0L
-  n_total <- R * length(rho_gs); feitos <- 0L
-  for (r in seq_len(R)) for (rg in rho_gs) {
-    feitos <- feitos + 1L; progresso(feitos, n_total, "selecao")
-    set.seed(semente + 61 * r + round(100 * rg))
-    d  <- gera_grupos(N, g = 3L, tam = 5L, n_ruido = 15L, rho_g = rg)
-    dt <- gera_grupos(n_teste, g = 3L, tam = 5L, n_ruido = 15L, rho_g = rg)
-    mu_teste <- as.vector(dt$X %*% d$beta)
+  linhas <- list()
+  z <- 0L
+  n_total <- R * length(rho_gs)
+  feitos <- 0L
+  for (r in seq_len(R)) {
+    for (rg in rho_gs) {
+      feitos <- feitos + 1L
+      progresso(feitos, n_total, "selecao")
+      set.seed(semente + 61 * r + round(100 * rg))
+      d <- gera_grupos(N, g = 3L, tam = 5L, n_ruido = 15L, rho_g = rg)
+      dt <- gera_grupos(n_teste, g = 3L, tam = 5L, n_ruido = 15L, rho_g = rg)
+      mu_teste <- as.vector(dt$X %*% d$beta)
 
-    for (a in alphas) {
-      dg <- diagnostico_ordem(d$X, d$y, alpha = a, B = B, nlambda = 30L,
-                              semente = semente + r)
-      b   <- dg$ref$beta[, dg$k]
-      eta <- as.vector(dg$ref$a0[dg$k] + dt$X %*% b)
+      for (a in alphas) {
+        dg <- diagnostico_ordem(d$X, d$y,
+          alpha = a, B = B, nlambda = 30L,
+          semente = semente + r
+        )
+        b <- dg$ref$beta[, dg$k]
+        eta <- as.vector(dg$ref$a0[dg$k] + dt$X %*% b)
 
-      z <- z + 1L
-      linhas[[z]] <- data.frame(
-        rep = r, rho_g = rg, alpha = a,
-        jaccard         = dg$jaccard_limiar,   # 1 = mesmo conjunto sempre
-        jaccard_exato   = dg$jaccard_exato,
-        amplitude_obj   = dg$amplitude_obj,    # ~0 => os pontos sao igualmente otimos
-        intercambiaveis = dg$intercambiaveis,
-        tamanho         = dg$tamanho_medio,
-        recuperacao = mean(d$idx_efeito %in% which(b != 0)),
-        eqm_mu = mean((mu_teste - eta)^2)      # o preco do remedio
-      )
+        z <- z + 1L
+        linhas[[z]] <- data.frame(
+          rep = r, rho_g = rg, alpha = a,
+          jaccard = dg$jaccard_limiar, # 1 = mesmo conjunto sempre
+          jaccard_exato = dg$jaccard_exato,
+          amplitude_obj = dg$amplitude_obj, # ~0 => os pontos sao igualmente otimos
+          intercambiaveis = dg$intercambiaveis,
+          tamanho = dg$tamanho_medio,
+          recuperacao = mean(d$idx_efeito %in% which(b != 0)),
+          eqm_mu = mean((mu_teste - eta)^2) # o preco do remedio
+        )
+      }
     }
   }
   do.call(rbind, linhas)
@@ -219,13 +262,15 @@ exemplo_copias <- function(N = 150L, semente = 11, tol = 1e-11) {
   y <- 3 * x + stats::rnorm(N)
 
   ordens <- list(`1,2,3` = 1:8, `3,2,1` = c(3, 2, 1, 4:8), `2,1,3` = c(2, 1, 3, 4:8))
-  tab <- sapply(ordens, function(o)
-    en_path(X, y, alpha = 1, lambda = 0.5, ordem = o, tol = tol)$beta[1:3, 1])
+  tab <- sapply(ordens, function(o) {
+    en_path(X, y, alpha = 1, lambda = 0.5, ordem = o, tol = tol)$beta[1:3, 1]
+  })
   rownames(tab) <- colnames(X)[1:3]
 
   ## com alpha < 1 o problema fica estritamente convexo: solucao unica
-  tab_en <- sapply(ordens, function(o)
-    en_path(X, y, alpha = 0.5, lambda = 0.5, ordem = o, tol = tol)$beta[1:3, 1])
+  tab_en <- sapply(ordens, function(o) {
+    en_path(X, y, alpha = 0.5, lambda = 0.5, ordem = o, tol = tol)$beta[1:3, 1]
+  })
   rownames(tab_en) <- colnames(X)[1:3]
 
   list(lasso = tab, elastic_net = tab_en, X = X, y = y)
