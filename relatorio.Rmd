@@ -295,7 +295,7 @@ lam_ex <- 0.55
 dc <- decomposicao(d2, lambda = lam_ex, alpha = 1, lim = c(-1.2, 2.2), n = 45)
 tr <- traj_2d(d2, lambda = lam_ex, alpha = 1, inicio = c(-1.0, 2.0), n_passos = 16)
 
-op <- par(mfrow = c(1, 3), mar = c(0.5, 0.5, 2.2, 0.5))
+op <- par(mfrow = c(1, 3), mar = c(1, 1, 1, 1))
 desenha_3d(dc$quadratico, titulo = "(a) erro quadratico")
 desenha_3d(dc$penalidade, titulo = "(b) penalidade l1")
 pm <- desenha_3d(dc$soma, titulo = "(c) a soma, com a trajetoria")
@@ -453,7 +453,7 @@ ggplot(cw$passos, aes(log(lambda), passos, linetype = partida)) +
   )) +
   guides(linetype = guide_legend(nrow = 2)) +
   labs(
-    x = expression(log(lambda)), y = "passos de coordenada até convergir",
+    x = expression(log(lambda)), y = "passos até convergir",
     linetype = NULL, title = "O custo ao longo do caminho",
     caption = "A distância entre as curvas é o que o regularization path economiza."
   )
@@ -646,7 +646,7 @@ ggplot(kk2, aes(log(lambda), viol, linetype = criterio)) +
   geom_line(colour = "grey15", linewidth = 0.6) +
   scale_y_log10() +
   labs(
-    x = expression(log(lambda)), y = "violação KKT relativa", linetype = NULL,
+    x = expression(log(lambda)), y = "erro relativo ao ótimo", linetype = NULL,
     title = "Um limiar fixo perde a escala no fim do caminho",
     subtitle = "O caminho é percorrido da direita (lambda máximo) para a esquerda (fim).",
     caption = paste(
@@ -717,6 +717,8 @@ ggplot(rot$traj, aes(passo, gap, linetype = rota)) +
 ```
 
 ```{r tab-rotas}
+sr <- rot$sensibilidade
+i_cd <- which(is.na(sr$eps))
 s <- rot$sensibilidade
 n_eps_grande <- s$nao_nulos[1]
 n_eps_pequeno <- s$nao_nulos[4]
